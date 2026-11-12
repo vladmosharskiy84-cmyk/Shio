@@ -54,6 +54,7 @@ class Settings:
     guard_interval_s: int = 30
     history_periods: int = 21
     history_check_top: int = 15
+    min_net_apr: float = 0.0  # мин. доходность связки, % годовых: ниже — не предлагаем и не входим
 
 
 def _num(value, label: str) -> float:
@@ -182,6 +183,10 @@ def load_settings(path: str) -> Settings:
             raise ConfigError(f"{key}: должно быть не меньше 1")
         ints[key] = int(v)
 
+    min_net_apr = _num(raw.get("min_net_apr", 0.0), "min_net_apr")
+    if min_net_apr < 0:
+        raise ConfigError("min_net_apr: порог доходности не может быть отрицательным")
+
     return Settings(
         capital_usd=float(capital),
         mode=mode,
@@ -195,5 +200,6 @@ def load_settings(path: str) -> Settings:
         max_price_diff_pct=float(_num(_require(raw, "max_price_diff_pct", "max_price_diff_pct"), "max_price_diff_pct")),
         hold_days=float(_num(_require(raw, "hold_days", "hold_days"), "hold_days")),
         db_path=str(eng.get("db_path", "data/shio.db")),
+        min_net_apr=float(min_net_apr),
         **ints,
     )

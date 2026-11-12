@@ -94,6 +94,8 @@ def decide(candidates: list[Candidate], open_positions: list[Position], pending:
             reason = "недостаточно ликвидности"
         if reason is None and c.op.apr_net_capital <= 0:
             reason = "доходность не положительная"
+        if reason is None and c.op.apr_net_capital < settings.min_net_apr:
+            reason = f"доходность ниже порога {settings.min_net_apr:g}% годовых"
         if reason is not None:
             out.append(Decision("skip", c, reason))
             continue

@@ -50,7 +50,16 @@ def test_auto_mode_enters_above_min_apr():
 
 
 def test_auto_mode_proposes_below_min_apr():
-    assert run([cand(apr=10.0)], mode="auto")[0].action == "propose"
+    # между min_net_apr (15) и min_auto_apr (20): предложить
+    assert run([cand(apr=17.0)], mode="auto")[0].action == "propose"
+
+
+def test_below_min_net_apr_skipped():
+    assert settings().min_net_apr == 15
+    for mode in ("semi", "auto"):
+        d = run([cand(apr=10.0)], mode=mode)[0]
+        assert d.action == "skip" and "15" in d.reason
+    assert run([cand(apr=15.0)])[0].action == "propose"
 
 
 def test_respects_max_positions():
