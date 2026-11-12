@@ -13,11 +13,11 @@ class ConfigError(Exception):
 
 @dataclass
 class Limits:
-    max_leverage: float = 3
+    max_leverage: float = 3.0
     max_pair_share: float = 0.5
     max_positions: int = 3
     aggressive_share: float = 0.3
-    min_auto_apr: float = 20
+    min_auto_apr: float = 20.0
     daily_loss_pause: float = 0.05
     warn_buffer: float = 0.40
     act_buffer: float = 0.20
@@ -74,6 +74,9 @@ def _require(raw: dict, key: str, label: str):
     return raw[key]
 
 
+_INT_LIMITS = {"max_positions", "proposal_ttl_s", "leg_retries"}
+
+
 def _load_limits(raw: dict) -> Limits:
     known = {f.name for f in fields(Limits)}
     unknown = set(raw) - known
@@ -83,7 +86,7 @@ def _load_limits(raw: dict) -> Limits:
     values = {}
     for k, v in raw.items():
         _num(v, f"limits.{k}")
-        values[k] = type(getattr(base, k))(v) if isinstance(getattr(base, k), int) else v
+        values[k] = int(v) if k in _INT_LIMITS else v
     lim = Limits(**values)
 
     if not 1 <= lim.max_leverage <= 10:

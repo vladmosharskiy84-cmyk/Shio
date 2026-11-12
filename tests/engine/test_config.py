@@ -74,3 +74,14 @@ def test_capital_not_checked_when_not_virtual(tmp_path):
 def test_rejects_bad_mode(tmp_path):
     with pytest.raises(ConfigError, match="режим"):
         load_settings(write(tmp_path, lambda c: c["engine"].update(mode="turbo")))
+
+
+def test_fractional_leverage_preserved(tmp_path):
+    path = write(tmp_path, lambda c: c["engine"]["limits"].update(max_leverage=2.5))
+    assert load_settings(path).limits.max_leverage == 2.5
+
+
+def test_rejects_leverage_above_ten_fractional(tmp_path):
+    path = write(tmp_path, lambda c: c["engine"]["limits"].update(max_leverage=10.9))
+    with pytest.raises(ConfigError):
+        load_settings(path)
