@@ -5,7 +5,7 @@ from pathlib import Path
 from engine.config import load_settings
 from engine.db import Db
 from engine.guardian import leg_buffer
-from engine.models import Leg, Position
+from engine.models import Leg, Position, Proposal
 from engine.report import build_status, format_positions, format_status, split_message
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -81,3 +81,14 @@ def test_split_message_never_emits_empty_parts():
     assert parts == ["a" * 4096]
     parts = split_message("b" * 4096 + "\n\n" + "c")
     assert all(p.strip() for p in parts) and "".join(parts).replace("\n", "") == "b" * 4096 + "c"
+
+
+def test_format_status_cli_hint_only_for_cli():
+    s = load_settings(str(ROOT / "config.yaml"))
+    db = Db(":memory:")
+    db.init()
+    db.save_proposal(Proposal(None, NOW, NOW + 900_000, "ETH", "spot-perp", "calm", [],
+                              100.0, 50.0, 1.0, "pending"))
+    st = build_status(db, s, NOW)
+    assert "(python -m engine proposals)" in format_status(st)
+    assert "python -m engine" not in format_status(st, cli_hint=False)

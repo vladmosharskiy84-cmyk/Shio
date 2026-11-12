@@ -68,7 +68,7 @@ def handle_message(text: str, chat_id: int, db, settings, now_ms: int) -> Reply 
     if cmd in ("/start", "/help"):
         return Reply(HELP)
     if cmd == "/status":
-        return Reply(format_status(build_status(db, settings, now_ms)))
+        return Reply(format_status(build_status(db, settings, now_ms), cli_hint=False))
     if cmd == "/positions":
         return Reply(format_positions(db, settings, now_ms))
     if cmd in ("/pause", "/resume"):

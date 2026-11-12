@@ -53,7 +53,8 @@ def build_status(db: Db, settings: Settings, now_ms: int) -> dict:
     }
 
 
-def format_status(st: dict) -> str:
+def format_status(st: dict, cli_hint: bool = True) -> str:
+    """cli_hint — подсказка про команду python -m engine proposals (в Telegram не нужна)."""
     mode = ("Автомат (бот открывает связки сам)" if st["mode"] == "auto"
             else "Полуавтомат (каждую связку подтверждаете вы)")
     lines = [
@@ -80,7 +81,7 @@ def format_status(st: dict) -> str:
     else:
         lines.append("Открытых связок нет")
     lines.append(f"Предложений ждут подтверждения: {st['pending']}"
-                 + (" (python -m engine proposals)" if st["pending"] else ""))
+                 + (" (python -m engine proposals)" if st["pending"] and cli_hint else ""))
     return "\n".join(lines)
 
 

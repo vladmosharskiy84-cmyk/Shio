@@ -148,3 +148,10 @@ def test_unknown_command_hints_help(db, settings):
     assert "/help" in handle_message("/foo", OWNER, db, settings, NOW).text
     assert "/help" in handle_message("привет", OWNER, db, settings, NOW).text
     assert "/help" in handle_callback("zzz", OWNER, db, settings, NOW).text
+
+
+def test_status_in_telegram_has_no_cli_hint(db, settings):
+    add_proposal(db)
+    text = handle_message("/status", OWNER, db, settings, NOW).text
+    assert "Предложений ждут подтверждения: 1" in text
+    assert "python -m engine" not in text
