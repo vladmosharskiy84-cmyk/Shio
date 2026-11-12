@@ -314,6 +314,14 @@ def test_chat_id_missing_when_enabled(tmp_path):
     assert len(bad) == 1 and "telegram-id" in bad[0].detail
 
 
+def test_chat_id_example_placeholder_fails(tmp_path):
+    s = settings(tmp_path)
+    s.telegram.chat_id = 123456789
+    bad = failed(do(tmp_path, s=s))
+    assert [c.name for c in bad] == ["Telegram chat_id"]
+    assert "пример" in bad[0].detail and "telegram-id" in bad[0].detail
+
+
 def test_db_wal(tmp_path):
     db = next(c for c in do(tmp_path) if c.name == "База данных")
     assert db.ok and "WAL" in db.detail

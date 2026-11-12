@@ -214,4 +214,4 @@ def test_local_example_is_valid_override(tmp_path):
     path = write(tmp_path)
     write_local(tmp_path, (ROOT / "config.local.yaml.example").read_text(encoding="utf-8"))
     s = load_settings(path)
-    assert s.telegram.enabled is True and isinstance(s.telegram.chat_id, int)
+    assert s.telegram.enabled is False and s.telegram.chat_id is None  # владелец включает сам

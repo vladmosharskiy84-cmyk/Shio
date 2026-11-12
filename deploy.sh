@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Shio на сервере.
 #   ./deploy.sh                — обновить код (git pull) и перезапустить движок
+#   ./deploy.sh restart        — перезапустить движок с новыми config.local.yaml и .env (без обновления)
 #   ./deploy.sh logs           — журнал движка в реальном времени (выход: Ctrl+C)
 #   ./deploy.sh doctor         — самопроверка: настройки, база, биржи, Telegram, сторож
 #   ./deploy.sh restore <файл> — восстановить базу из копии shio-ГГГГ-ММ-ДД.db.enc
@@ -122,12 +123,25 @@ cmd_deploy() {
     docker compose build
     echo "== Запускаю =="
     docker compose up -d
+    confirm_running
+}
+
+# Дождаться сигнала «жив» и показать состояние; иначе — журнал и выход с ошибкой
+confirm_running() {
     if ! wait_healthy; then
         show_failure "Движок не запустился."
         exit 1
     fi
     echo "== Движок работает =="
     docker compose exec engine python -m engine status
+}
+
+# Настройки (config.local.yaml) и секреты (.env) движок читает только при запуске
+cmd_restart() {
+    prepare
+    echo "== Перезапускаю движок с текущими настройками (остановка — до 60 с) =="
+    docker compose up -d --force-recreate engine
+    confirm_running
 }
 
 cmd_logs() {
@@ -181,11 +195,12 @@ main() {
     ROOT="$(pwd)"
     case "${1:-deploy}" in
         deploy) cmd_deploy ;;
+        restart) cmd_restart ;;
         logs) cmd_logs ;;
         doctor) cmd_doctor ;;
         restore) shift; cmd_restore "$@" ;;
-        -h|--help|help) sed -n '2,6p' "$(readlink -f "$0")" | sed 's/^# \{0,1\}//' ;;
-        *) die "неизвестная команда «$1». Команды: logs, doctor, restore <файл> (без команды — обновить)" ;;
+        -h|--help|help) sed -n '2,7p' "$(readlink -f "$0")" | sed 's/^# \{0,1\}//' ;;
+        *) die "неизвестная команда «$1». Команды: restart, logs, doctor, restore <файл> (без команды — обновить)" ;;
     esac
 }
 

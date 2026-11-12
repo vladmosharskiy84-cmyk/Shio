@@ -100,6 +100,7 @@ python -m engine --config other.yaml status   # другой файл настр
 
 ```bash
 ./deploy.sh                 # обновить код и перезапустить бота
+./deploy.sh restart         # перезапустить после правки config.local.yaml или .env
 ./deploy.sh logs            # журнал в реальном времени (выход: Ctrl+C)
 ./deploy.sh doctor          # самопроверка: настройки, база, биржи, Telegram, сторож
 ./deploy.sh restore <файл>  # восстановить базу из копии shio-ГГГГ-ММ-ДД.db.enc

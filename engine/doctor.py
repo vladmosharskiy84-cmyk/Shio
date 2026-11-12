@@ -233,7 +233,13 @@ async def _check_telegram(settings, getme) -> list[Check]:
     return [_ok("Telegram", f"бот @{await getme(token)} отвечает")]
 
 
+EXAMPLE_CHAT_ID = 123456789  # заглушка из config.local.yaml.example
+
+
 def _check_chat_id(settings) -> list[Check]:
+    if settings.telegram.chat_id == EXAMPLE_CHAT_ID:
+        return [_fail("Telegram chat_id", "chat_id — это пример из образца, впишите свой "
+                                          "(python -m engine telegram-id)")]
     if settings.telegram.chat_id is not None:
         return [_ok("Telegram chat_id", "задан")]
     if settings.telegram.enabled:

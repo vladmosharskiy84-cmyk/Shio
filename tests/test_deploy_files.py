@@ -221,6 +221,47 @@ def test_restore_copies_outside_file_and_restarts(proj, tmp_path):
     assert seq[j].endswith(f"/app/data/backups/{src.name}")
 
 
+def test_restart_recreates_without_pull_or_build(proj):
+    r, calls = run_deploy(proj, "restart")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert not any(c.startswith("git") for c in calls)
+    seq = compose_calls(calls)
+    assert "docker compose build" not in seq
+    i = seq.index("docker compose up -d --force-recreate engine")
+    j = seq.index("docker compose exec engine python -m engine status")
+    assert i < j
+    assert (proj / "config.local.yaml").is_file()  # проверки prepare() выполнены
+
+
+def test_restart_missing_env_stops(proj):
+    (proj / ".env").unlink()
+    r, calls = run_deploy(proj, "restart")
+    assert r.returncode != 0 and ".env" in r.stderr
+    assert compose_calls(calls) == []
+
+
+def test_restart_unhealthy_shows_logs(proj):
+    stub = proj.parent / "bin" / "docker"
+    stub.write_text(STUB.replace("echo healthy", "echo unhealthy").replace(
+        "inspect*) echo running", "inspect*) echo exited"), encoding="utf-8")
+    r, calls = run_deploy(proj, "restart")
+    assert r.returncode != 0
+    assert "docker compose logs --no-color --tail 50 engine" in calls
+
+
+def test_help_lists_restart(proj):
+    r, _ = run_deploy(proj, "help")
+    assert r.returncode == 0 and "./deploy.sh restart" in r.stdout
+    r, _ = run_deploy(proj, "bogus")
+    assert "restart" in r.stderr
+
+
+def test_install_guide_uses_restart():
+    guide = _read("docs/INSTALL.md")
+    assert "./deploy.sh restart" in guide
+    assert "--force-recreate" not in guide
+
+
 @pytest.mark.skipif(shutil.which("docker") is None, reason="docker не установлен")
 def test_compose_config_valid(tmp_path):
     # копия в tmp: не трогаем настоящий .env в корне проекта

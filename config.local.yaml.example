@@ -4,9 +4,11 @@
 # Секции сливаются: например, telegram.chat_id отсюда + остальные telegram.* из config.yaml.
 # Списки и отдельные значения заменяются целиком.
 
+# Telegram: сначала узнайте свой chat_id (python -m engine telegram-id), затем впишите его
+# вместо 123456789, уберите «#» в начале строки chat_id и поставьте enabled: true.
 telegram:
-  enabled: true        # включить уведомления и управление через Telegram
-  chat_id: 123456789   # ваш chat_id: узнать командой python -m engine telegram-id
+  enabled: false       # true — включить уведомления и управление через Telegram
+  # chat_id: 123456789   # ваш chat_id (123456789 — только пример)
 
 # Капитал в USD. При виртуальной торговле он должен равняться сумме
 # engine.paper_balances — если меняете капитал, перепишите и балансы:
