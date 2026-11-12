@@ -14,6 +14,7 @@ from engine.decider import (MIN_PAIR_CAPITAL, NO_BALANCE_REASON, affordable_capi
 from engine.executor import close_pair, open_pair
 from engine.finder import find_candidates
 from engine.guardian import guard, leg_buffer
+from engine.launchpool import check_announcements
 from engine.models import Command, Proposal
 from engine.reconciler import reconcile
 
@@ -38,13 +39,15 @@ class CommandError(Exception):
 class Runner:
     loop_sleep_s = 1.0
 
-    def __init__(self, settings, collector, broker, db, notifier, clock=time.time):
+    def __init__(self, settings, collector, broker, db, notifier, clock=time.time,
+                 announcement_sources=None):
         self.settings = settings
         self.collector = collector
         self.broker = broker
         self.db = db
         self.notifier = notifier
         self.clock = clock
+        self.announcement_sources = list(announcement_sources or [])
         self.snapshot: MarketSnapshot | None = None
         self.snapshot_at: int | None = None  # now_ms (по self.clock) последнего удачного сбора
         self.last_marks: dict[tuple[str, str], float] = {}
@@ -57,6 +60,7 @@ class Runner:
             ("guard", settings.guard_interval_s, self.tick_guard),
             ("heartbeat", HEARTBEAT_INTERVAL_S, self.tick_heartbeat),
             ("daily", DAILY_INTERVAL_S, self.tick_daily),
+            ("launchpool", settings.launchpool.interval_s, self.tick_launchpool),
         ]
 
     # --- цикл ---
@@ -122,6 +126,13 @@ class Runner:
         # раздельно: сбой сводки не должен отменять копию, и наоборот
         await self._guarded("daily_summary", self._daily_summary)
         await self._guarded("daily_backup", self._daily_backup)
+
+    async def tick_launchpool(self) -> None:
+        if self.settings.launchpool.enabled and self.announcement_sources:
+            await self._guarded("launchpool", self._launchpool)
+
+    async def _launchpool(self) -> None:
+        await check_announcements(self.announcement_sources, self.db, self.notifier, self.now_ms())
 
     def _due_today(self, mark: str, hour_utc: int) -> str | None:
         """Дата UTC (YYYY-MM-DD), если час наступил, за день нет успеха и пауза после попытки прошла.

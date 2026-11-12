@@ -938,3 +938,28 @@ def test_backup_snapshot_failure_warns_once_and_retries(cfg_path, monkeypatch):
         assert len(env.notifier.documents) == 1
     finally:
         run(env.collector.close())
+
+
+def test_runner_launchpool_tick_respects_interval_and_disabled(cfg_path):
+    from tests.engine.test_launchpool import FakeSource, ann
+
+    env = Env(cfg_path)
+    src = FakeSource([])
+    env.runner.announcement_sources = [src]
+    env.settings.launchpool.interval_s = 1800
+    try:
+        run(env.runner.step())  # первый запуск: ничего не шлём
+        src.items.append(ann(1))
+        env.clock.t += 60
+        run(env.runner.step())
+        assert not [t for t, _ in env.notifier.sent if "Новый пул" in t]
+        env.clock.t += 1800
+        run(env.runner.step())
+        assert len([t for t, _ in env.notifier.sent if "Новый пул" in t]) == 1
+        env.settings.launchpool.enabled = False
+        src.items.append(ann(2))
+        env.clock.t += 1800
+        run(env.runner.step())
+        assert len([t for t, _ in env.notifier.sent if "Новый пул" in t]) == 1
+    finally:
+        run(env.collector.close())

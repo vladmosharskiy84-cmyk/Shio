@@ -167,9 +167,24 @@ async def _telegram_supervisor(run, stop: asyncio.Event, backoff_s: float | None
             pass
 
 
+def _build_announcement_sources(settings: Settings, http) -> list:
+    from engine.launchpool import BybitAnnouncements, OkxAnnouncements
+
+    known = {"bybit": BybitAnnouncements, "okx": OkxAnnouncements}
+    sources = []
+    for name in settings.launchpool.exchanges:
+        if name in known:
+            sources.append(known[name](http))
+        else:
+            logging.getLogger("engine").warning(
+                "Launchpool: неизвестная биржа %r в launchpool.exchanges, пропускаю", name)
+    return sources
+
+
 async def _run(settings: Settings) -> None:
     from engine.broker import PaperBroker
     from engine.collector import Collector
+    from engine.launchpool import AiohttpJson
     from engine.runner import Runner
     from engine.telegram import bot as tgbot
 
@@ -177,10 +192,13 @@ async def _run(settings: Settings) -> None:
         collector = Collector(settings)
         stop = asyncio.Event()
         tg_task = None
+        http = AiohttpJson()
         try:
             broker = PaperBroker(collector, settings, db)
             notifier, token = tgbot.build_notifier(settings, db)
-            runner = Runner(settings, collector, broker, db, notifier)
+            sources = _build_announcement_sources(settings, http)
+            runner = Runner(settings, collector, broker, db, notifier,
+                            announcement_sources=sources)
             if token:
                 async def run_tg(stop_event: asyncio.Event) -> None:
                     await tgbot.run_telegram(token, settings, db, notifier, stop_event)
@@ -197,6 +215,7 @@ async def _run(settings: Settings) -> None:
                     await asyncio.gather(tg_task, return_exceptions=True)
                 except Exception:  # noqa: BLE001
                     logging.getLogger("engine").exception("Telegram: ошибка при остановке")
+            await http.close()
             await collector.close()
 
 
