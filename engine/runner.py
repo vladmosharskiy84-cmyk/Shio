@@ -8,7 +8,8 @@ import time
 from engine import ledger
 from engine.collector import MarketSnapshot
 from engine.decider import (MIN_PAIR_CAPITAL, NO_BALANCE_REASON, affordable_capital,
-                            capital_for_pair, check_limits, decide, reserve_capital)
+                            capital_for_pair, check_limits, daily_loss_hit, decide,
+                            reserve_capital)
 from engine.executor import close_pair, open_pair
 from engine.finder import find_candidates
 from engine.guardian import guard, leg_buffer
@@ -153,6 +154,7 @@ class Runner:
 
         eq, dpnl = await self._equity(now)
         self._save_stats(equity=eq, day_pnl=dpnl)
+        await self._check_daily_loss(eq, dpnl)
 
         cands = await find_candidates(snap, self.collector, self.settings,
                                       lambda kind: capital_for_pair(eq, self.settings))
@@ -185,6 +187,19 @@ class Runner:
         log.info("Кандидатов %d: предложено %d, вход %d, пропущено %d; капитал %.2f USD, "
                  "P&L за день %+.2f USD", len(cands), counts["propose"], counts["enter"],
                  counts["skip"], eq, dpnl)
+
+    async def _check_daily_loss(self, eq: float, dpnl: float) -> None:
+        """Дневной убыток достиг лимита — пауза до ручного возобновления (resume)."""
+        if bool(self.db.get_kv("paused", False)) or not daily_loss_hit(eq, dpnl, self.settings):
+            return
+        self.db.set_kv("paused", True)
+        limit = self.settings.limits.daily_loss_pause
+        self.db.audit("daily_loss_pause", {"equity": eq, "day_start_equity": eq - dpnl,
+                                           "day_pnl": dpnl, "limit": limit})
+        await self.notifier.send(
+            f"Дневной убыток {dpnl:+.2f} USD достиг лимита {limit:.0%} от капитала на начало "
+            f"суток ({eq - dpnl:.2f} USD). Бот на паузе: новые связки не открываются до "
+            f"команды resume.", "alert")
 
     async def _fit_to_balances(self, cands: list) -> list:
         """Урезать капитал кандидатов до свободных балансов их бирж; слишком малые — убрать."""

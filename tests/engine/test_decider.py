@@ -30,8 +30,9 @@ def prop(base="SOL", status="pending"):
     return Proposal(None, 0, 1, base, "spot-perp", "calm", [], 100.0, 50.0, 1.0, status)
 
 
-def run(cands, open_positions=(), pending=(), day_pnl=0.0, paused=False, mode="semi"):
-    return decide(cands, list(open_positions), list(pending), EQUITY, day_pnl, paused,
+def run(cands, open_positions=(), pending=(), day_pnl=0.0, paused=False, mode="semi",
+        equity=EQUITY):
+    return decide(cands, list(open_positions), list(pending), equity, day_pnl, paused,
                   settings(mode))
 
 
@@ -97,10 +98,17 @@ def test_non_positive_apr_skipped():
 
 
 def test_daily_loss_pauses():
-    d = run([cand("A"), cand("B")], day_pnl=-26.0)
+    # капитал на начало суток 500 (= текущий + дневной убыток), лимит 5% = 25
+    d = run([cand("A"), cand("B")], day_pnl=-26.0, equity=EQUITY - 26.0)
     assert [x.action for x in d] == ["skip", "skip"]
     assert all("дневной" in x.reason for x in d)
-    assert run([cand()], day_pnl=-24.0)[0].action == "propose"
+    assert run([cand()], day_pnl=-24.0, equity=EQUITY - 24.0)[0].action == "propose"
+
+
+def test_daily_loss_threshold_uses_day_start_equity():
+    # начало суток 504.5 -> лимит 25.225; от текущих 480 было бы 24 и пауза
+    assert run([cand()], day_pnl=-24.5, equity=480.0)[0].action == "propose"
+    assert run([cand()], day_pnl=-25.3, equity=479.2)[0].action == "skip"
 
 
 def test_paused_skips_all():
@@ -132,7 +140,7 @@ def test_pending_aggressive_proposal_counts_toward_share():
 
 
 def test_daily_loss_boundary_pauses():
-    assert run([cand()], day_pnl=-25.0)[0].action == "skip"
+    assert run([cand()], day_pnl=-25.0, equity=EQUITY - 25.0)[0].action == "skip"
 
 
 def test_aggressive_sum_at_cap_allowed():

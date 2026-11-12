@@ -50,6 +50,15 @@ def reserve_capital(kind: str, legs_plan: list[dict], capital: float,
         balances[ex] = balances.get(ex, 0.0) - share
 
 
+def daily_loss_hit(equity: float, day_pnl: float, settings: Settings) -> bool:
+    """Дневной убыток достиг лимита: порог — доля капитала на начало суток UTC.
+
+    equity — текущий капитал, day_pnl = equity − капитал на начало суток (ledger.day_pnl).
+    """
+    day_start = equity - day_pnl
+    return day_pnl <= -settings.limits.daily_loss_pause * day_start
+
+
 def check_limits(base: str, profile: str, capital: float, open_positions: list[Position],
                  active_proposals: list[Proposal], equity: float, day_pnl: float, paused: bool,
                  settings: Settings) -> str | None:
@@ -62,7 +71,7 @@ def check_limits(base: str, profile: str, capital: float, open_positions: list[P
     active = [p for p in active_proposals if p.status in _ACTIVE_PROPOSALS]
     if paused:
         return "бот на паузе"
-    if day_pnl <= -lim.daily_loss_pause * equity:
+    if daily_loss_hit(equity, day_pnl, settings):
         return "дневной убыток достиг лимита, новые связки не открываем"
     if len(held) + len(active) >= lim.max_positions:
         return f"уже открыто максимум связок ({lim.max_positions})"

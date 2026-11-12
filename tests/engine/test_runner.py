@@ -663,3 +663,34 @@ def test_taken_commands_failed_on_start(cfg_path):
     cmd = env.command(cid)
     assert cmd["status"] == "error" and cmd["result"] == "бот перезапущен"
     assert env.db.get_kv("paused") is None  # команда не выполнялась повторно
+
+
+def test_daily_loss_pauses_until_resume(cfg_path):
+    env = Env(cfg_path)
+    try:
+        run(env.runner.tick_collect())            # база суток: 10000
+        assert env.db.get_kv("day_start_equity")["equity"] == pytest.approx(10000)
+        env.db.set_kv("paper_balances", {"bybit": 9400.0})  # убыток 6% > 5%
+        env.clock.t += 60
+        run(env.runner.tick_collect())
+        assert env.db.get_kv("paused") is True
+        assert len(env.audits("daily_loss_pause")) == 1
+        alerts = [t for t, lvl in env.notifier.sent if lvl == "alert"]
+        assert len(alerts) == 1 and "Дневной убыток" in alerts[0]
+        env.clock.t += 60
+        run(env.runner.tick_collect())            # уже на паузе — без повторной тревоги
+        assert len(env.audits("daily_loss_pause")) == 1
+        assert len([1 for _, lvl in env.notifier.sent if lvl == "alert"]) == 1
+        # новые сутки UTC: дневной P&L обнулился, но пауза остаётся до resume
+        env.clock.t += 86_400
+        run(env.runner.tick_collect())
+        assert env.db.get_kv("paused") is True
+        assert env.db.pending_proposals(now_ms(env)) == []
+        env.db.add_command("resume")
+        run(env.runner.tick_commands())
+        env.clock.t += 60
+        run(env.runner.tick_collect())
+    finally:
+        run(env.collector.close())
+    assert env.db.get_kv("paused") is False
+    assert [p.base for p in env.db.pending_proposals(now_ms(env))] == ["HOT"]
