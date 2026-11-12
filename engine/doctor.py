@@ -235,10 +235,10 @@ async def _check_telegram(settings, getme) -> list[Check]:
 
 def _check_chat_id(settings) -> list[Check]:
     if settings.telegram.chat_id is not None:
-        return [_ok("Telegram chat_id", "задан в config.yaml")]
+        return [_ok("Telegram chat_id", "задан")]
     if settings.telegram.enabled:
-        return [_fail("Telegram chat_id", "не задан в config.yaml — узнайте его командой "
-                                          "python -m engine telegram-id")]
+        return [_fail("Telegram chat_id", "не задан — узнайте его командой "
+                                          "python -m engine telegram-id и впишите в config.local.yaml")]
     return [_warn("Telegram chat_id", "не задан (Telegram выключен)")]
 
 

@@ -233,5 +233,9 @@ class Db:
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (key, json.dumps(value, ensure_ascii=False)))
 
+    def delete_kv(self, key: str) -> None:
+        with self.conn:
+            self.conn.execute("DELETE FROM kv WHERE key=?", (key,))
+
     def heartbeat(self, now_ms: int) -> None:
         self.set_kv("heartbeat", now_ms)

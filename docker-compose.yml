@@ -7,6 +7,7 @@ services:
     volumes:
       - ./data:/app/data
       - ./config.yaml:/app/config.yaml:ro
+      - ./config.local.yaml:/app/config.local.yaml:ro   # ваши настройки (deploy.sh создаст пустой)
     stop_grace_period: 60s
     mem_limit: 1g
     logging:

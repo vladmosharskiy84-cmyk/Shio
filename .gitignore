@@ -7,3 +7,4 @@ data/*.csv
 data/*.db*
 data/*.log
 data/backups/
+config.local.yaml

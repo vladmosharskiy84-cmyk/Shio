@@ -92,6 +92,12 @@ class Runner:
         while not self._stopping:
             await self.step()
             await asyncio.sleep(self.loop_sleep_s)
+        # чистая остановка: сигнал «жив» снимаем, чтобы restore и status сразу видели, что бот стоит
+        try:
+            self.db.delete_kv("heartbeat")
+        except Exception:  # noqa: BLE001
+            log.exception("Не удалось снять сигнал «жив» при остановке")
+        log.info("Движок остановлен")
 
     def stop(self) -> None:
         self._stopping = True

@@ -1,0 +1,18 @@
+# Ваши личные настройки Shio. Скопируйте файл: cp config.local.yaml.example config.local.yaml
+# config.local.yaml не попадает в git: обновление (git pull / ./deploy.sh) его не трогает.
+# Пишите сюда только то, что меняете; остальное берётся из config.yaml.
+# Секции сливаются: например, telegram.chat_id отсюда + остальные telegram.* из config.yaml.
+# Списки и отдельные значения заменяются целиком.
+
+telegram:
+  enabled: true        # включить уведомления и управление через Telegram
+  chat_id: 123456789   # ваш chat_id: узнать командой python -m engine telegram-id
+
+# Капитал в USD. При виртуальной торговле он должен равняться сумме
+# engine.paper_balances — если меняете капитал, перепишите и балансы:
+# capital_usd: 500
+# engine:
+#   paper_balances:
+#     bybit: 170
+#     okx: 170
+#     hyperliquid: 160

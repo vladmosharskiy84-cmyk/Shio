@@ -134,3 +134,77 @@ def test_rejects_non_finite_numbers(tmp_path, value, where):
             c["exchanges"]["bybit"]["perp_taker"] = value
     with pytest.raises(ConfigError, match="конечное число"):
         load_settings(write(tmp_path, m))
+
+
+# --- config.local.yaml: настройки владельца поверх config.yaml ---
+def write_local(tmp_path, text):
+    p = tmp_path / "config.local.yaml"
+    p.write_text(text, encoding="utf-8")
+    return p
+
+
+def test_local_overrides_deep_merge(tmp_path):
+    path = write(tmp_path)
+    write_local(tmp_path, "telegram:\n  enabled: true\n  chat_id: 4242\n"
+                          "engine:\n  limits:\n    max_leverage: 2\n")
+    s = load_settings(path)
+    assert s.telegram.enabled is True and s.telegram.chat_id == 4242
+    assert s.telegram.dedupe_s == 600  # соседние ключи секции сохранены
+    assert s.limits.max_leverage == 2
+    assert s.mode == "semi" and s.virtual is True  # остальное из config.yaml
+
+
+def test_local_lists_and_scalars_replace(tmp_path):
+    path = write(tmp_path)
+    write_local(tmp_path, "launchpool:\n  exchanges: [okx]\n")
+    assert load_settings(path).launchpool.exchanges == ["okx"]
+
+
+def test_local_missing_or_empty_is_ignored(tmp_path):
+    path = write(tmp_path)
+    base = load_settings(path)
+    write_local(tmp_path, "")
+    assert load_settings(path) == base
+
+
+def test_validation_runs_on_merged_result(tmp_path):
+    path = write(tmp_path)
+    write_local(tmp_path, "telegram:\n  enabled: true\n")
+    with pytest.raises(ConfigError, match="chat_id") as e:
+        load_settings(path)
+    assert "config.local.yaml" in str(e.value)
+
+
+def test_local_bad_yaml_names_file(tmp_path):
+    path = write(tmp_path)
+    write_local(tmp_path, "telegram: [\n")
+    with pytest.raises(ConfigError, match="config.local.yaml"):
+        load_settings(path)
+
+
+def test_local_not_a_dict_names_file(tmp_path):
+    path = write(tmp_path)
+    write_local(tmp_path, "- 1\n- 2\n")
+    with pytest.raises(ConfigError, match="config.local.yaml"):
+        load_settings(path)
+
+
+def test_local_is_directory_names_file(tmp_path):
+    path = write(tmp_path)
+    (tmp_path / "config.local.yaml").mkdir()
+    with pytest.raises(ConfigError, match="config.local.yaml"):
+        load_settings(path)
+
+
+def test_error_without_local_names_main_file(tmp_path):
+    path = write(tmp_path, lambda c: c.update(capital_usd=-1))
+    with pytest.raises(ConfigError) as e:
+        load_settings(path)
+    assert "config.yaml" in str(e.value) and "config.local.yaml" not in str(e.value)
+
+
+def test_local_example_is_valid_override(tmp_path):
+    path = write(tmp_path)
+    write_local(tmp_path, (ROOT / "config.local.yaml.example").read_text(encoding="utf-8"))
+    s = load_settings(path)
+    assert s.telegram.enabled is True and isinstance(s.telegram.chat_id, int)

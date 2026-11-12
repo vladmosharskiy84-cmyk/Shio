@@ -16,6 +16,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY engine/ engine/
 COPY scanner/ scanner/
+# config.yaml в образе — запасной: compose монтирует поверх него config.yaml и config.local.yaml с сервера
 COPY config.yaml main.py ./
 RUN mkdir -p /app/data/backups && chown -R shio:shio /app/data
 

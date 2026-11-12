@@ -1042,10 +1042,18 @@ def test_stop_waits_for_current_step(cfg_path):
         await orig_step()
 
     env.runner.step = counting_step
+    seen = []
+    orig_delete = env.db.delete_kv
+
+    def delete_kv(key):
+        seen.append(env.db.get_kv(key))  # что было перед снятием сигнала при остановке
+        orig_delete(key)
+
+    env.db.delete_kv = delete_kv
     run(scenario())
     assert done == [1]
     assert steps == [1]  # второй шаг не запускался
-    assert env.db.get_kv("heartbeat") == int(T0 * 1000)  # остальные задачи шага выполнены
+    assert seen == [int(T0 * 1000)]  # остальные задачи шага выполнены
 
 
 def test_setup_logging_idempotent(cfg_path):
@@ -1125,3 +1133,19 @@ def test_log_pinger(caplog):
         _log_pinger(HealthPinger("https://hc-ping.com/secret-uuid"))
     assert "Сторож не настроен" in caplog.text
     assert "hc-ping.com" in caplog.text and "secret-uuid" not in caplog.text
+
+
+def test_clean_stop_clears_heartbeat(cfg_path):
+    # после чистой остановки restore не ждёт 3 минуты: сигнала «жив» больше нет
+    env = Env(cfg_path)
+    env.runner.loop_sleep_s = 0
+    orig_step = env.runner.step
+
+    async def step_then_stop():
+        await orig_step()
+        assert env.db.get_kv("heartbeat") is not None
+        env.runner.stop()
+
+    env.runner.step = step_then_stop
+    run(asyncio.wait_for(env.runner.run_forever(), 5))
+    assert env.db.get_kv("heartbeat") is None

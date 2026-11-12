@@ -324,7 +324,7 @@ def _cmd_telegram_id(settings: Settings, args) -> int:
               "напишите ему и повторите команду.")
         return 1
     print(f"Ваш chat_id: {sender.chat_id} (от: {who}). Проверьте, что это вы, и впишите "
-          "число в telegram.chat_id в config.yaml.")
+          "число в telegram.chat_id в config.local.yaml (образец — config.local.yaml.example).")
     return 0
 
 

@@ -102,7 +102,9 @@ python -m engine --config other.yaml status   # другой файл настр
 3. Узнайте свой `chat_id`: `python -m engine telegram-id`, затем напишите боту любое сообщение
    в личном чате. Команда ждёт до 2 минут, печатает «Ваш chat_id: ...» вместе с именем и @username
    написавшего (проверьте, что это вы) и завершается. В Telegram она ничего не отвечает.
-4. В `config.yaml` впишите `telegram.chat_id` и поставьте `telegram.enabled: true`.
+4. В `config.local.yaml` впишите `telegram.chat_id` и поставьте `telegram.enabled: true`
+   (`cp config.local.yaml.example config.local.yaml`). Этот файл ваш: он не хранится в git,
+   обновление его не трогает, а его значения заменяют одноимённые из `config.yaml`.
 5. Запустите `python -m engine run` и отправьте боту `/status`.
 
 Если токена нет или Telegram недоступен, движок работает дальше, а уведомления идут в журнал

@@ -1,8 +1,9 @@
-"""Настройки движка: загрузка и проверка config.yaml."""
+"""Настройки движка: загрузка и проверка config.yaml (+ config.local.yaml владельца)."""
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field, fields
+from pathlib import Path
 from typing import Literal
 
 import yaml
@@ -209,16 +210,55 @@ def _load_launchpool(raw: dict) -> LaunchpoolCfg:
                          exchanges=list(names))
 
 
-def load_settings(path: str) -> Settings:
+def local_path_for(path: str | Path) -> Path:
+    """config.yaml -> config.local.yaml рядом с ним (настройки владельца, не в git)."""
+    p = Path(path)
+    return p.with_name(f"{p.stem}.local{p.suffix}")
+
+
+def _read_yaml(path: str | Path):
     try:
         with open(path, encoding="utf-8") as f:
-            raw = yaml.safe_load(f)
+            return yaml.safe_load(f)
     except OSError as e:
         raise ConfigError(f"Не удалось прочитать файл настроек {path}: {e}") from e
     except yaml.YAMLError as e:
         raise ConfigError(f"Некорректный YAML в {path}: {e}") from e
+
+
+def _deep_merge(base: dict, over: dict) -> dict:
+    """Словари сливаются рекурсивно; числа, строки и списки из over заменяют значения base."""
+    out = dict(base)
+    for key, value in over.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
+def load_settings(path: str) -> Settings:
+    """config.yaml, поверх него — необязательный config.local.yaml; проверка — по итогу."""
+    raw = _read_yaml(path)
     if not isinstance(raw, dict):
-        raise ConfigError("Файл настроек пуст или имеет неверный формат")
+        raise ConfigError(f"Файл настроек {path} пуст или имеет неверный формат")
+    where = str(path)
+    local = local_path_for(path)
+    if local.exists():
+        over = _read_yaml(local)
+        if over is not None:
+            if not isinstance(over, dict):
+                raise ConfigError(f"Файл настроек {local} должен содержать секции "
+                                  f"(ключ: значение), а не список или текст")
+            raw = _deep_merge(raw, over)
+            where = f"{path} + {local}"
+    try:
+        return _build_settings(raw)
+    except ConfigError as e:
+        raise ConfigError(f"{where}: {e}") from None
+
+
+def _build_settings(raw: dict) -> Settings:
 
     eng = raw.get("engine") or {}
     if not isinstance(eng, dict):
