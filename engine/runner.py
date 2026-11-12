@@ -90,6 +90,7 @@ class Runner:
         else:
             if lost:
                 log.warning("Команд, прерванных прошлым запуском: %d (помечены ошибкой)", lost)
+        await self._warn_if_crashed()
         while not self._stopping:
             await self.step()
             if self.stall is not None:
@@ -104,6 +105,26 @@ class Runner:
 
     def stop(self) -> None:
         self._stopping = True
+
+    async def _warn_if_crashed(self) -> None:
+        """Сигнал «жив» остался с прошлого запуска — тот завершился не штатно (сбой, kill, зависание).
+
+        При чистой остановке сигнал снимается. Позиции сверит первый же шаг (reconcile).
+        """
+        try:
+            last = self.db.get_kv("heartbeat")
+            if last is None:
+                return
+            try:
+                when = datetime.fromtimestamp(int(last) / 1000, tz=timezone.utc).strftime("%H:%M")
+            except (TypeError, ValueError, OverflowError, OSError):
+                when = "??:??"
+            log.warning("Прошлый запуск завершился не штатно (последний сигнал «жив» в %s UTC)", when)
+            await self.notifier.send(
+                f"⚠️ Движок перезапущен после сбоя (последний сигнал «жив» был в {when} UTC). "
+                "Позиции проверяются.", "warn")
+        except Exception:  # noqa: BLE001 — уведомление не должно мешать запуску
+            log.exception("Не удалось сообщить о перезапуске после сбоя")
 
     async def _guarded(self, name: str, coro_fn) -> None:
         """Ошибка тика пишется в журнал и audit_log и не останавливает цикл."""

@@ -296,6 +296,7 @@ def test_install_guide_final_review_points():
                  "НЕ делайте шаг 2.5", "Enter passphrase for key", "id -u shio",
                  "docker ps", "sudo apt install -y git", "ls /var/run/reboot-required",
                  "Telegram Desktop", "(unhealthy)", "Движок завис N с — перезапуск",
+                 "перезапущен после сбоя (последний сигнал",
                  "DigitalOcean, Vultr или Netcup"):
         assert text in guide, text
     assert guide.index("sudo apt install -y git") < guide.index("git clone")
