@@ -3,3 +3,4 @@ __pycache__/
 data/*.csv
 .env
 .superpowers/
+*.bundle
