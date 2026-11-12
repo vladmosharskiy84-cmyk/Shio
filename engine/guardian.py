@@ -53,7 +53,7 @@ def _snapshot_mark(snapshot: MarketSnapshot, leg: Leg) -> float | None:
     return price if price is not None and price > 0 else None
 
 
-def _buffer(leg: Leg, mark: float) -> float:
+def leg_buffer(leg: Leg, mark: float) -> float:
     """Запас до ликвидации perp-ноги с учётом фактической (довнесённой) маржи."""
     lev_eff = leg.entry_price * leg.amount / leg.margin
     liq = liquidation_price(leg.entry_price, leg.side, lev_eff)
@@ -153,7 +153,7 @@ async def _guard_position(pos, snapshot, broker, db, notifier, settings, last_ma
             await notifier.send(f"Связка {pos.base}: " + "; ".join(problems) + ".", "warning")
 
     def buffers() -> list[tuple[Leg, float, float]]:
-        return [(l, marks[id(l)], _buffer(l, marks[id(l)]))
+        return [(l, marks[id(l)], leg_buffer(l, marks[id(l)]))
                 for l in _perp_legs(pos) if id(l) in marks]
 
     # 2. цена уже за ликвидацией

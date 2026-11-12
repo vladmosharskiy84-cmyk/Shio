@@ -137,3 +137,15 @@ def test_aggressive_sum_at_cap_allowed():
     d = run([cand(profile="aggressive", capital=50.0)],
             open_positions=[pos("ETH", "aggressive", capital=100.0)])
     assert d[0].action == "propose"
+
+
+def test_check_limits_reasons():
+    from engine.decider import check_limits
+    s = settings()
+    assert check_limits("A", "calm", 100.0, [], [], EQUITY, 0.0, False, s) is None
+    assert "паузе" in check_limits("A", "calm", 100.0, [], [], EQUITY, 0.0, True, s)
+    full = [pos("X"), pos("Y")]
+    assert "максимум" in check_limits("A", "calm", 100.0, full, [prop("Z")], EQUITY, 0.0, False, s)
+    assert check_limits("A", "calm", 100.0, full, [prop("Z", status="expired")], EQUITY, 0.0,
+                        False, s) is None
+    assert "ETH" in check_limits("ETH", "calm", 100.0, [pos("ETH")], [], EQUITY, 0.0, False, s)

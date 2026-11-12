@@ -4,3 +4,5 @@ data/*.csv
 .env
 .superpowers/
 *.bundle
+data/*.db*
+data/*.log

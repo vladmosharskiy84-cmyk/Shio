@@ -149,15 +149,29 @@ class Db:
                 f"UPDATE proposals SET {','.join(c + '=?' for c in _PROP_COLS)} WHERE id=?",
                 self._prop_values(p) + [p.id])
 
+    @staticmethod
+    def _proposal(row: sqlite3.Row) -> Proposal:
+        d = dict(row)
+        d["legs_plan"] = json.loads(d["legs_plan"])
+        return Proposal(**d)
+
+    def get_proposal(self, proposal_id: int) -> Proposal | None:
+        row = self.conn.execute("SELECT * FROM proposals WHERE id=?", (proposal_id,)).fetchone()
+        return None if row is None else self._proposal(row)
+
     def pending_proposals(self, now_ms: int) -> list[Proposal]:
         rows = self.conn.execute(
             "SELECT * FROM proposals WHERE status='pending' AND expires_at>? ORDER BY id", (now_ms,))
-        out = []
-        for r in rows:
-            d = dict(r)
-            d["legs_plan"] = json.loads(d["legs_plan"])
-            out.append(Proposal(**d))
-        return out
+        return [self._proposal(r) for r in rows]
+
+    def expire_proposals(self, now_ms: int) -> list[int]:
+        """Перевести просроченные pending-предложения в expired; вернуть их id."""
+        with self.conn:
+            ids = [r["id"] for r in self.conn.execute(
+                "SELECT id FROM proposals WHERE status='pending' AND expires_at<=?", (now_ms,))]
+            self.conn.executemany(
+                "UPDATE proposals SET status='expired' WHERE id=?", [(i,) for i in ids])
+        return ids
 
     # --- commands ---
     def add_command(self, type: str, arg: str | None = None) -> int:
