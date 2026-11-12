@@ -207,18 +207,33 @@ def test_no_docker_message(proj, tmp_path):
     assert r.returncode != 0 and "Docker" in r.stderr
 
 
-def test_restore_copies_outside_file_and_restarts(proj, tmp_path):
+def test_restore_mounts_file_read_only_and_restarts(proj, tmp_path):
     src = tmp_path / "shio-2026-11-01.db.enc"
     src.write_bytes(b"x")
     r, calls = run_deploy(proj, "restore", str(src))
     assert r.returncode == 0, r.stdout + r.stderr
-    assert (proj / "data" / "backups" / src.name).exists()
+    assert list((proj / "data" / "backups").iterdir()) == []  # ничего не копируется
     seq = compose_calls(calls)
     i = seq.index("docker compose stop engine")
     j = next(k for k, c in enumerate(seq) if "python -m engine restore" in c)
     k = seq.index("docker compose start engine")
     assert i < j < k
-    assert seq[j].endswith(f"/app/data/backups/{src.name}")
+    assert seq[j] == (f"docker compose run --rm -v {src.resolve()}:/tmp/restore.db.enc:ro engine "
+                      "python -m engine restore --force /tmp/restore.db.enc")
+
+
+def test_restore_file_inside_data_also_mounted(proj):
+    src = proj / "data" / "backups" / "shio-2026-11-02.db.enc"
+    src.write_bytes(b"x")
+    r, calls = run_deploy(proj, "restore", "data/backups/shio-2026-11-02.db.enc")
+    assert r.returncode == 0, r.stdout + r.stderr
+    j = next(c for c in compose_calls(calls) if "python -m engine restore" in c)
+    assert f"-v {src.resolve()}:/tmp/restore.db.enc:ro" in j
+
+
+def test_restore_missing_file(proj):
+    r, calls = run_deploy(proj, "restore", "nope.db.enc")
+    assert r.returncode != 0 and "не найден" in r.stderr and compose_calls(calls) == []
 
 
 def test_restart_recreates_without_pull_or_build(proj):

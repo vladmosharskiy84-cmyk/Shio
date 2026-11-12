@@ -159,25 +159,22 @@ cmd_restore() {
     [[ -n "$src" ]] || die "укажите файл копии: ./deploy.sh restore data/backups/shio-ГГГГ-ММ-ДД.db.enc"
     [[ -f "$src" ]] || die "файл не найден: $src"
     prepare
-    # Контейнер видит только ./data (как /app/data): файл снаружи копируем в data/backups
-    local abs rel
+    # Файл подключаем в контейнер только для чтения: ни копировать, ни класть в data не нужно
+    local abs name
     abs="$(readlink -f "$src")"
-    if [[ "$abs" != "$ROOT/data/"* ]]; then
-        cp -- "$abs" "data/backups/$(basename -- "$abs")"
-        abs="$ROOT/data/backups/$(basename -- "$abs")"
-        echo "Файл скопирован в $abs"
-    fi
-    rel="${abs#"$ROOT"/}"
+    [[ "$abs" != *:* ]] || die "в пути к файлу есть двоеточие — переименуйте файл или папку: $abs"
+    name="$(basename -- "$abs")"
     echo "== Останавливаю движок (до 60 с: он дозавершит текущий шаг) =="
     docker compose stop engine
     if [[ -n "$(docker compose ps -q --status running engine 2>/dev/null || true)" ]]; then
         die "движок не остановился; восстановление отменено"
     fi
-    echo "== Восстанавливаю базу из $rel =="
+    echo "== Восстанавливаю базу из $name =="
     local rc=0
     # Контейнер точно остановлен (проверено выше). После чистой остановки сигнала «жив» уже нет,
     # --force нужен только если движок был убит без остановки (kill, нехватка памяти).
-    docker compose run --rm engine python -m engine restore --force "/app/$rel" || rc=$?
+    docker compose run --rm -v "$abs:/tmp/restore.db.enc:ro" engine \
+        python -m engine restore --force /tmp/restore.db.enc || rc=$?
     echo "== Запускаю движок =="
     docker compose start engine || docker compose up -d engine  # контейнера могло не быть
     if (( rc != 0 )); then
