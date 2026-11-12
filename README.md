@@ -90,6 +90,21 @@ python -m engine --config other.yaml status   # другой файл настр
 - Предложение действует 15 минут (`limits.proposal_ttl_s`), потом истекает.
 - Журнал пишется на экран и в `data/shio.log`, база — `data/shio.db`.
 
+## Сервер (работа 24/7)
+
+Чтобы бот работал круглосуточно, его ставят на VPS (2 ГБ RAM, Ubuntu 24.04, Германия/Финляндия/
+Нидерланды; не США и не Сингапур) в Docker. Пошаговая инструкция на русском: **[docs/INSTALL.md](docs/INSTALL.md)**.
+
+На сервере секреты (`SHIO_TELEGRAM_TOKEN`, `SHIO_BACKUP_KEY`, `SHIO_HEALTHCHECK_URL`) записываются в
+файл `.env` (образец — `.env.example`), а ваши настройки — в `config.local.yaml`. Управление:
+
+```bash
+./deploy.sh                 # обновить код и перезапустить бота
+./deploy.sh logs            # журнал в реальном времени (выход: Ctrl+C)
+./deploy.sh doctor          # самопроверка: настройки, база, биржи, Telegram, сторож
+./deploy.sh restore <файл>  # восстановить базу из копии shio-ГГГГ-ММ-ДД.db.enc
+```
+
 ## Telegram: подключение
 
 Бот присылает предложения связок с кнопками «Открыть» / «Пропустить», тревоги, ежедневную сводку и
@@ -98,14 +113,15 @@ python -m engine --config other.yaml status   # другой файл настр
 
 1. В Telegram найдите @BotFather, отправьте `/newbot` и получите токен бота.
 2. Задайте токен в переменной окружения (в `config.yaml` токен не хранится):
-   `export SHIO_TELEGRAM_TOKEN=123456:ABC...`
-3. Узнайте свой `chat_id`: `python -m engine telegram-id`, затем напишите боту любое сообщение
+   `export SHIO_TELEGRAM_TOKEN=123456:ABC...` (на сервере — строкой в файле `.env`)
+3. Узнайте свой `chat_id`: `python -m engine telegram-id` (на сервере:
+   `docker compose run --rm engine python -m engine telegram-id`), затем напишите боту любое сообщение
    в личном чате. Команда ждёт до 2 минут, печатает «Ваш chat_id: ...» вместе с именем и @username
    написавшего (проверьте, что это вы) и завершается. В Telegram она ничего не отвечает.
 4. В `config.local.yaml` впишите `telegram.chat_id` и поставьте `telegram.enabled: true`
    (`cp config.local.yaml.example config.local.yaml`). Этот файл ваш: он не хранится в git,
    обновление его не трогает, а его значения заменяют одноимённые из `config.yaml`.
-5. Запустите `python -m engine run` и отправьте боту `/status`.
+5. Запустите `python -m engine run` (на сервере — `./deploy.sh`) и отправьте боту `/status`.
 
 Если токена нет или Telegram недоступен, движок работает дальше, а уведомления идут в журнал
 (в журнале будет предупреждение «Telegram не настроен: ...»).
@@ -118,7 +134,8 @@ python -m engine --config other.yaml status   # другой файл настр
 
 1. Создайте ключ (один раз):
    `python -c "import os,base64;print(base64.b64encode(os.urandom(32)).decode())"`
-2. Задайте его в окружении бота: `export SHIO_BACKUP_KEY=<ключ>`. В `config.yaml` ключ не хранится.
+2. Задайте его в окружении бота: `export SHIO_BACKUP_KEY=<ключ>` (на сервере — строкой в `.env`).
+   В `config.yaml` ключ не хранится.
 3. **Сохраните ключ вне сервера** (менеджер паролей). Без него копию восстановить нельзя.
    Если ключа нет, копии не делаются, а бот раз в день напишет предупреждение.
 
@@ -129,6 +146,7 @@ export SHIO_BACKUP_KEY=<ваш ключ>
 python -m engine restore shio-2026-01-15.db.enc
 ```
 
+На сервере вместо этого: `./deploy.sh restore <файл>` — сам остановит и снова запустит бота.
 Команда напечатает путь прежней базы (`<база>.before-restore-<время>`): она остаётся на диске.
 Если ключ неверный или файл повреждён, база не меняется.
 
