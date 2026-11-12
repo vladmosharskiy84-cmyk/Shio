@@ -111,7 +111,7 @@ API и двигатель общаются **только через базу**:
 **Основные таблицы**: `settings`, `exchanges` (зашифрованные ключи), `opportunities`, `proposals`, `positions`,
 `legs`, `orders`, `funding_payments`, `fees`, `commands`, `audit_log`, `heartbeat`.
 
-**Стек**: Python 3.12, ccxt (async), FastAPI, SQLite + SQLAlchemy, aiogram (Telegram), pytest.
+**Стек**: Python 3.11+, ccxt (async), FastAPI, SQLite (стандартный sqlite3, режим WAL), aiogram (Telegram), pytest.
 Интерфейс: React + Vite + TypeScript, PWA.
 
 ## 7. Исполнение и риск
