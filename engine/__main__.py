@@ -300,6 +300,34 @@ def _cmd_telegram_id(settings: Settings, args) -> int:
     return 0
 
 
+async def _doctor(settings: Settings) -> int:
+    from engine import doctor
+    from engine.launchpool import AiohttpJson
+    from engine.watchdog import HealthPinger
+
+    http = AiohttpJson()
+    pinger = HealthPinger.from_env()
+    try:
+        checks = await doctor.run_checks(
+            settings, exchange_factory=doctor.CcxtProbe, telegram_getme=doctor.telegram_getme,
+            announcement_sources=_build_announcement_sources(settings, http), pinger=pinger,
+            db_path=settings.db_path)
+    finally:
+        await pinger.aclose()
+        await http.close()
+    print(doctor.format_checks(checks))
+    return 0 if all(c.ok for c in checks) else 1
+
+
+def _cmd_doctor(settings: Settings, args) -> int:
+    print("Проверяю сервер (до минуты)...")
+    try:
+        return asyncio.run(_doctor(settings))
+    except KeyboardInterrupt:
+        print("Остановлено.")
+        return 1
+
+
 def _cmd_run(settings: Settings, args) -> int:
     if not settings.virtual:
         print("Реальная торговля появится на этапе 5. Сейчас движок работает только "
@@ -338,6 +366,8 @@ def _parser() -> argparse.ArgumentParser:
     sp.add_argument("file", help="файл копии shio-ГГГГ-ММ-ДД.db.enc")
     sp.set_defaults(fn=_cmd_restore)
     sub.add_parser("resume", help="снять паузу").set_defaults(fn=_cmd_resume)
+    sub.add_parser("doctor", help="самопроверка сервера: настройки, база, биржи, Telegram, сторож"
+                   ).set_defaults(fn=_cmd_doctor)
     return p
 
 
@@ -346,6 +376,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         settings = load_settings(args.config)
     except ConfigError as e:
+        if args.cmd == "doctor":
+            from engine.doctor import Check, format_checks
+
+            print(format_checks([Check("Настройки", False, str(e))]))
+            return 1
         print(f"Ошибка в настройках: {e}")
         return 2
     return args.fn(settings, args)
