@@ -106,3 +106,10 @@ class ExchangeClient:
             f"историю {perp.symbol}", [])
         rates = [h.get("fundingRate") for h in (hist or [])[-periods:]]
         perp.hist_avg_rate_per_h, perp.hist_positive_share = history_stats(rates, perp.interval_h)
+
+    async def order_book(self, symbol: str, limit: int = 20) -> dict:
+        return await self.ex.fetch_order_book(symbol, limit)
+
+    def amount_to_precision(self, symbol: str, amount: float) -> float:
+        """Округлить количество по правилам биржи (рынки должны быть загружены)."""
+        return float(self.ex.amount_to_precision(symbol, amount))
