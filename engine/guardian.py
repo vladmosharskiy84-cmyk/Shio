@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from engine.collector import MarketSnapshot
-from engine.executor import close_pair, reduce_leg
+from engine.executor import R_LIQUIDATED, close_pair, reduce_leg
 from engine.models import Leg, Position
 from scanner.calc import liquidation_price, margin_buffer
 
@@ -242,7 +242,8 @@ async def _guard_position(pos, snapshot, broker, db, notifier, settings, last_ma
 async def _liquidated(pos, gone, broker, db, notifier, settings) -> None:
     """Цена перепрыгнула ликвидацию: нога потеряна, остальное закрываем, бот на паузу.
 
-    Если остальные ноги закрыть не удалось, позиция остаётся «закрывается» (R18).
+    Если остальные ноги закрыть не удалось, позиция остаётся «закрывается» с причиной
+    «ликвидация» и дозакрывается Guardian/Reconciler (итоговый статус — liquidated).
     """
     lost = 0.0
     for leg, mark in gone:
@@ -255,10 +256,7 @@ async def _liquidated(pos, gone, broker, db, notifier, settings) -> None:
         leg.open = False
     pos.realized_pnl -= lost  # до close_pair: его итог в уведомлении и журнале уже с потерей
     db.update_position(pos)
-    await close_pair(pos, "ликвидация", broker, db, notifier, settings)
-    if pos.status == "closed":
-        pos.status = "liquidated"
-    db.update_position(pos)
+    await close_pair(pos, R_LIQUIDATED, broker, db, notifier, settings)  # итог: liquidated
     db.set_kv("paused", True)
     await notifier.send(
         f"Связка {pos.base}: позиция ликвидирована, потеря маржи {lost:.2f} USD. "

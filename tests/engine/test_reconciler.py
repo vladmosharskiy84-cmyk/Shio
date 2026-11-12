@@ -226,3 +226,18 @@ def test_open_amount_mismatch_synced_with_warning(db, settings):
     assert got.status == "open" and got.legs[1].amount == pytest.approx(7.0)
     assert issues and "warn" in [lvl for _, lvl in notifier.sent]
     assert broker.calls == []
+
+
+def test_closing_incomplete_open_ends_failed(db, settings):
+    left = mkpos(db, "closing", spot=7.5, perp=0.0, reason="незавершённое открытие")
+    broker = ScriptedBroker()
+    hold(broker, spot=7.5)
+    run(reconcile(broker, db, FakeNotifier(), settings))
+    assert db.get_position(left.id).status == "failed"
+    assert broker.calls == [("bybit", SPOT, "spot", "sell", 7.5)]
+
+
+def test_closing_incomplete_open_nothing_left_ends_failed(db, settings):
+    empty = mkpos(db, "closing", reason="незавершённое открытие")
+    run(reconcile(ScriptedBroker(), db, FakeNotifier(), settings))
+    assert db.get_position(empty.id).status == "failed"

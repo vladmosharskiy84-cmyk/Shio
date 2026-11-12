@@ -3,14 +3,12 @@ from __future__ import annotations
 
 import time
 
-from engine.executor import close_pair
+from engine.executor import R_INCOMPLETE, close_pair, final_status
 from engine.models import Position
 
 _EPS = 1e-9
-R_INCOMPLETE = "незавершённое открытие"
 R_NOT_FOUND = "не найдена на бирже"
 R_LEG_NOT_FOUND = "нога не найдена на бирже"
-R_LIQUIDATED = "ликвидация"
 
 
 def _now_ms() -> int:
@@ -135,10 +133,8 @@ async def _opening(pos, held, broker, db, notifier, settings, issues) -> None:
     text = (f"Связка {pos.base}: найдено незавершённое открытие ({_legs_desc(pos)}), "
             f"закрываю оставшееся.")
     if any(a > 0 for a in amounts):
+        # close_pair: причина «незавершённое открытие» -> итоговый статус failed
         pos = await close_pair(pos, R_INCOMPLETE, broker, db, notifier, settings)
-        if pos.status == "closed":
-            pos.status = "failed"
-            pos.close_reason = R_INCOMPLETE
     else:
         _zero_legs(pos)
         pos.status = "failed"
@@ -156,14 +152,12 @@ async def _closing(pos, held, broker, db, notifier, settings, issues) -> None:
         reason = pos.close_reason or "закрытие после перезапуска"
         text = f"Связка {pos.base}: закрытие не было завершено, закрываю остаток."
         pos = await close_pair(pos, reason, broker, db, notifier, settings)
-        if pos.status == "closed" and reason == R_LIQUIDATED:
-            pos.status = "liquidated"
         db.update_position(pos)
         await _repair(pos, db, notifier, issues, "reconcile_repair", text, "alert",
                       action="retry_close", result=pos.status)
         return
     _zero_legs(pos)
-    pos.status = "liquidated" if pos.close_reason == R_LIQUIDATED else "closed"
+    pos.status = final_status(pos.close_reason)
     pos.closed_at = pos.closed_at or _now_ms()
     db.update_position(pos)
     await _repair(pos, db, notifier, issues, "reconcile_repair",

@@ -9,6 +9,16 @@ from scanner.calc import perp_perp_notional, spot_perp_notional
 
 _EPS = 1e-9
 
+R_INCOMPLETE = "незавершённое открытие"
+R_LIQUIDATED = "ликвидация"
+# причина закрытия -> итоговый статус (остальные причины -> «closed»)
+_FINAL_STATUS = {R_INCOMPLETE: "failed", R_LIQUIDATED: "liquidated"}
+
+
+def final_status(reason: str | None) -> str:
+    """Итоговый статус полностью закрытой позиции по причине закрытия."""
+    return _FINAL_STATUS.get(reason or "", "closed")
+
 
 @dataclass
 class _Result:
@@ -217,6 +227,7 @@ async def open_pair(plan: list[dict], capital: float, base: str, kind: str, prof
 
 async def _unwind_first(pos, first, second, broker, db, notifier, settings) -> Position:
     second.open = False
+    pos.close_reason = R_INCOMPLETE
     amount = first.amount
     rc = await _shrink(pos, first, amount, broker, db, settings)
     if not rc.complete:
@@ -238,8 +249,16 @@ async def _unwind_first(pos, first, second, broker, db, notifier, settings) -> P
 
 
 async def close_pair(position: Position, reason: str, broker, db, notifier, settings) -> Position:
+    """Закрывает открытые ноги в обратном порядке.
+
+    Причина закрытия — первая назначенная (повторная попытка с другой причиной её не
+    затирает). Итоговый статус: «ликвидация» -> liquidated, «незавершённое открытие» ->
+    failed, иначе closed. Если ногу закрыть не удалось — статус остаётся «closing».
+    """
     pos = position
     pos.status = "closing"
+    pos.close_reason = pos.close_reason or reason
+    reason = pos.close_reason
     db.update_position(pos)
     db.audit("closing", {"position_id": pos.id, "reason": reason})
 
@@ -264,10 +283,10 @@ async def close_pair(position: Position, reason: str, broker, db, notifier, sett
 
     pos.realized_pnl += (sum(l.funding_received for l in pos.legs)
                          - sum(l.fees_paid for l in pos.legs))
-    pos.status = "closed"
+    pos.status = final_status(reason)  # type: ignore[assignment]
     pos.closed_at = _now_ms()
-    pos.close_reason = reason
     db.update_position(pos)
-    db.audit("closed", {"position_id": pos.id, "reason": reason, "realized_pnl": pos.realized_pnl})
+    db.audit("closed", {"position_id": pos.id, "reason": reason, "status": pos.status,
+                        "realized_pnl": pos.realized_pnl})
     await notifier.send(f"Связка {pos.base} закрыта ({reason}). Итог: {pos.realized_pnl:+.2f} USD.", "info")
     return pos

@@ -225,3 +225,30 @@ def test_reduce_leg_books_pnl_fee_and_keeps_topped_up_margin(db, settings):
     stored = db.get_position(pos.id)
     assert stored.legs[0].amount == pytest.approx(6.5) and stored.realized_pnl == pytest.approx(10.0)
     assert stored.legs[1].margin == pytest.approx(320.0)
+
+
+def test_close_reason_kept_when_close_incomplete_first_reason_wins(db, settings):
+    broker = ScriptedBroker()
+    pos, notifier = do_open(broker, db, settings)
+    broker.script = [0.0, 0.0, 0.0]
+    out = run(close_pair(pos, "ликвидация", broker, db, notifier, settings))
+    assert out.status == "closing"
+    assert db.get_position(pos.id).close_reason == "ликвидация"
+    # повтор с другой причиной (например, ручное закрытие) не затирает первую
+    out = run(close_pair(db.get_position(pos.id), "закрыто вручную", broker, db, notifier,
+                         settings))
+    stored = db.get_position(pos.id)
+    assert stored.close_reason == "ликвидация"
+    assert out.status == stored.status == "liquidated"
+
+
+def test_unwind_sets_incomplete_open_reason(db, settings):
+    broker = ScriptedBroker(script=[1.0, 0, 0, 0, 0, 0, 0])
+    pos, _ = do_open(broker, db, settings)
+    assert pos.status == "closing"
+    assert db.get_position(pos.id).close_reason == "незавершённое открытие"
+    # успешный откат: позиция «не исполнено» с той же причиной
+    broker = ScriptedBroker(script=[1.0, 0.0, 0.0, 0.0])
+    pos, _ = do_open(broker, db, settings)
+    stored = db.get_position(pos.id)
+    assert stored.status == "failed" and stored.close_reason == "незавершённое открытие"

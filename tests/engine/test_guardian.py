@@ -300,3 +300,18 @@ def test_failed_rebalance_alerts_once_per_hour(db, settings):
     assert notifier.sent[0][1] == "alert"
     actions, _, _ = do_guard([p], snap(), broker, db, settings, notifier, now=NOW + 30_000)
     assert kinds(actions) == ["rebalance"] and len(notifier.sent) == 1
+
+
+def test_liquidation_with_incomplete_close_ends_liquidated_after_reconcile(db, settings):
+    from engine.reconciler import reconcile
+    p = make_pos(db)
+    # спот-нога не продаётся: закрытие после ликвидации не завершено
+    broker = Broker(lost=250.0, script=[0.0] * 3)
+    actions, notifier, _ = do_guard([p], snap(140.0), broker, db, settings)
+    assert kinds(actions) == ["liquidated"]
+    stored = db.get_position(p.id)
+    assert stored.status == "closing" and stored.close_reason == "ликвидация"
+    broker.amounts = {"bybit": {SPOT: 7.5}}
+    run(reconcile(broker, db, FakeNotifier(), settings))
+    stored = db.get_position(p.id)
+    assert stored.status == "liquidated" and stored.close_reason == "ликвидация"
