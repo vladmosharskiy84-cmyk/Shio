@@ -166,3 +166,47 @@ def history_stats(rates: list[float], interval_h: float) -> tuple[Optional[float
         return None, None
     avg = sum(rates) / len(rates)
     return avg / interval_h, sum(1 for r in rates if r > 0) / len(rates)
+
+
+def estimate_fill(levels: list[list[float]], notional_usd: float) -> tuple[float, float, float]:
+    """Проход по одной стороне стакана (asks для покупки, bids для продажи), лучшая цена первой.
+
+    Возвращает (avg_price, filled_usd, slippage), где slippage = |avg - best| / best.
+    Если книга тоньше суммы — заполняется сколько есть.
+    """
+    if not levels or notional_usd <= 0:
+        return 0.0, 0.0, 0.0
+    best = float(levels[0][0])
+    remaining = float(notional_usd)
+    filled_usd = 0.0
+    filled_amount = 0.0
+    for level in levels:
+        price, amount = float(level[0]), float(level[1])
+        if remaining <= 0 or price <= 0 or amount <= 0:
+            continue
+        take_usd = min(remaining, price * amount)
+        filled_usd += take_usd
+        filled_amount += take_usd / price
+        remaining -= take_usd
+    if filled_amount <= 0:
+        return 0.0, 0.0, 0.0
+    avg = filled_usd / filled_amount
+    return avg, filled_usd, abs(avg - best) / best
+
+
+def liquidation_price(entry: float, side: str, leverage: float, mmr: float = 0.005) -> float:
+    """Цена ликвидации изолированной позиции при данном плече и ставке поддерживающей маржи."""
+    if leverage <= 0:
+        raise ValueError(f"leverage must be > 0, got {leverage}")
+    if side == "short":
+        return entry * (1.0 + 1.0 / leverage - mmr)
+    if side == "long":
+        return entry * (1.0 - 1.0 / leverage + mmr)
+    raise ValueError(f"side must be 'long' or 'short', got {side!r}")
+
+
+def margin_buffer(entry: float, mark: float, liq: float) -> float:
+    """Доля пути от входа до ликвидации, которая ещё не пройдена, в [0, 1]."""
+    if liq == entry:
+        return 0.0
+    return min(1.0, max(0.0, (liq - mark) / (liq - entry)))

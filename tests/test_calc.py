@@ -1,6 +1,7 @@
 import pytest
 
-from scanner.calc import (Fees, PerpInfo, SpotInfo, history_stats, parse_interval_hours,
+from scanner.calc import (Fees, PerpInfo, SpotInfo, estimate_fill, history_stats, liquidation_price,
+                          margin_buffer, parse_interval_hours,
                           perp_perp_notional, perp_perp_opportunity, spot_perp_notional,
                           spot_perp_opportunity)
 
@@ -78,3 +79,53 @@ def test_profit_uses_conservative_rate():
                                FEES, capital=500, leverage=1, hold_days=10)
     assert op.profit_hold_usd == pytest.approx(250 * 0.0003 * 10 - 0.75)
     assert op.apr_gross == pytest.approx(0.009 * 365 * 100)   # брутто — по текущей
+
+
+def test_estimate_fill_spans_levels():
+    avg, filled_usd, slip = estimate_fill([[100, 1], [101, 1]], 150)
+    assert avg == pytest.approx(100.33, abs=0.01)
+    assert filled_usd == pytest.approx(150, abs=0.01)
+    assert slip == pytest.approx(0.0033, abs=0.0001)
+
+
+def test_estimate_fill_book_too_thin():
+    avg, filled_usd, slip = estimate_fill([[100, 0.5]], 150)
+    assert filled_usd == pytest.approx(50, abs=0.01)
+    assert avg == pytest.approx(100, abs=0.01)
+    assert slip == pytest.approx(0.0, abs=1e-9)
+
+
+def test_estimate_fill_empty_or_zero_notional():
+    assert estimate_fill([], 150) == (0.0, 0.0, 0.0)
+    assert estimate_fill([[100, 1]], 0) == (0.0, 0.0, 0.0)
+
+
+def test_estimate_fill_ignores_extra_elements():
+    avg, filled_usd, _ = estimate_fill([[100, 1, 7]], 50)
+    assert avg == pytest.approx(100)
+    assert filled_usd == pytest.approx(50)
+
+
+def test_liquidation_price_short_and_long():
+    assert liquidation_price(100, "short", 3) == pytest.approx(132.83, abs=0.01)
+    assert liquidation_price(100, "long", 3) == pytest.approx(67.17, abs=0.01)
+
+
+@pytest.mark.parametrize("lev,side", [(0, "long"), (-1, "short"), (3, "buy")])
+def test_liquidation_price_rejects_bad_input(lev, side):
+    with pytest.raises(ValueError):
+        liquidation_price(100, side, lev)
+
+
+def test_margin_buffer():
+    assert margin_buffer(100, 100, 132.83) == pytest.approx(1.0)
+    assert margin_buffer(100, 126.26, 132.83) == pytest.approx(0.2, abs=0.01)
+    assert margin_buffer(100, 140, 132.83) == 0.0
+    assert margin_buffer(100, 100, 100) == 0.0
+
+
+def test_margin_buffer_long_side():
+    liq = liquidation_price(100, "long", 3)
+    assert margin_buffer(100, 100, liq) == pytest.approx(1.0)
+    assert margin_buffer(100, 80.0, liq) == pytest.approx((liq - 80.0) / (liq - 100), abs=1e-9)
+    assert margin_buffer(100, 60.0, liq) == 0.0
