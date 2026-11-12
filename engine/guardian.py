@@ -83,9 +83,33 @@ async def guard(positions: list[Position], snapshot: MarketSnapshot, broker, db,
     for pos in positions:
         if pos.status != "open":
             continue
-        actions += await _guard_position(pos, snapshot, broker, db, notifier, settings,
-                                         last_marks, now)
+        try:
+            actions += await _guard_position(pos, snapshot, broker, db, notifier, settings,
+                                             last_marks, now)
+        except Exception as exc:  # noqa: BLE001 — сбой одной связки не должен оставить без защиты остальные
+            actions.append(GuardAction(pos.id, "stale", f"ошибка проверки: {exc!r}"))
+            try:
+                db.audit("guard_error", {"position_id": pos.id, "error": repr(exc)})
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                await notifier.send(
+                    f"Связка {pos.base}: ошибка проверки Guardian ({exc!r}). Проверьте позицию.",
+                    "alert")
+            except Exception:  # noqa: BLE001
+                pass
     return actions
+
+
+class _ThrottledNotifier:
+    """Пропускает уведомления не чаще раза в час на ключ kv."""
+
+    def __init__(self, notifier, db, key: str, now_ms: int):
+        self.notifier, self.db, self.key, self.now_ms = notifier, db, key, now_ms
+
+    async def send(self, text: str, level: str = "info") -> None:
+        if _once_per_hour(self.db, self.key, self.now_ms):
+            await self.notifier.send(text, level)
 
 
 async def _guard_position(pos, snapshot, broker, db, notifier, settings, last_marks,
@@ -100,34 +124,37 @@ async def _guard_position(pos, snapshot, broker, db, notifier, settings, last_ma
     marks: dict[int, float] = {}  # id(leg) -> цена
     stale: list[str] = []
     missing: list[str] = []
+    no_margin: list[str] = []
     for leg in pos.legs:
         if not leg.open:
             continue
         key = (leg.exchange, leg.symbol)
+        name = f"{leg.symbol} на {leg.exchange}"
         mark = _snapshot_mark(snapshot, leg)
         if mark is not None:
             last_marks[key] = mark
         else:
             mark = last_marks.get(key)
-            (stale if mark is not None else missing).append(f"{leg.symbol} на {leg.exchange}")
+            (stale if mark is not None else missing).append(name)
         if mark is not None:
             marks[id(leg)] = mark
+        if leg.kind == "perp" and leg.amount > 0 and leg.margin <= 0:
+            no_margin.append(name)
+    problems = []
     if missing:
-        act("stale", "нет цены: " + ", ".join(missing))
-        if _once_per_hour(db, f"guard:stale:{pos.id}", now):
-            await notifier.send(
-                f"Связка {pos.base}: нет цены ({', '.join(missing)}) — проверки запаса "
-                f"до ликвидации невозможны. Проверьте позицию.", "warning")
-        return out
+        problems.append("нет цены: " + ", ".join(missing))
     if stale:
-        act("stale", "используется последняя известная цена: " + ", ".join(stale))
+        problems.append("данные устарели, используется последняя известная цена: " + ", ".join(stale))
+    if no_margin:
+        problems.append("не указана маржа, запас до ликвидации не считается: " + ", ".join(no_margin))
+    if problems:
+        act("stale", "; ".join(problems))
         if _once_per_hour(db, f"guard:stale:{pos.id}", now):
-            await notifier.send(
-                f"Связка {pos.base}: данные устарели ({', '.join(stale)}), "
-                f"используется последняя известная цена.", "warning")
+            await notifier.send(f"Связка {pos.base}: " + "; ".join(problems) + ".", "warning")
 
     def buffers() -> list[tuple[Leg, float, float]]:
-        return [(l, marks[id(l)], _buffer(l, marks[id(l)])) for l in _perp_legs(pos)]
+        return [(l, marks[id(l)], _buffer(l, marks[id(l)]))
+                for l in _perp_legs(pos) if id(l) in marks]
 
     # 2. цена уже за ликвидацией
     gone = [(l, m) for l, m, b in buffers() if b <= 0]
@@ -173,15 +200,16 @@ async def _guard_position(pos, snapshot, broker, db, notifier, settings, last_ma
                 f"Связка {pos.base}: запас до ликвидации {worst:.0%} на {worst_leg.exchange}.",
                 "warning")
 
-    # 5. перекос объёмов ног
+    # 5. перекос объёмов ног (только когда у обеих ног есть цена)
     open_legs = [l for l in pos.legs if l.open]
-    if len(open_legs) == 2:
+    if len(open_legs) == 2 and all(id(l) in marks for l in open_legs):
         a, b = open_legs
         top = max(a.amount, b.amount)
         if top > 0 and abs(a.amount - b.amount) / top > lim.max_drift:
             big = a if a.amount > b.amount else b
             diff = abs(a.amount - b.amount)
-            got = await reduce_leg(pos, big, diff, broker, db, notifier, settings)
+            quiet = _ThrottledNotifier(notifier, db, f"guard:rebalance:{pos.id}", now)
+            got = await reduce_leg(pos, big, diff, broker, db, quiet, settings)
             act("rebalance", f"нога на {big.exchange} сокращена на {got:g} из {diff:g}")
 
     # 6. разворот ставки: ожидаемый доход за 24 ч
@@ -190,7 +218,8 @@ async def _guard_position(pos, snapshot, broker, db, notifier, settings, last_ma
         if not leg.open or leg.kind != "perp":
             continue
         info = snapshot.perp(leg.exchange, leg.symbol)
-        if info is None or info.funding_rate is None or not info.interval_h:
+        if (info is None or info.funding_rate is None or not info.interval_h
+                or id(leg) not in marks):
             return out or [GuardAction(pos.id, "ok", "разворот не проверен: нет ставки")]
         sign = 1 if leg.side == "long" else -1
         income += -sign * (info.funding_rate / info.interval_h) * 24 * leg.amount * marks[id(leg)]
@@ -211,7 +240,10 @@ async def _guard_position(pos, snapshot, broker, db, notifier, settings, last_ma
 
 
 async def _liquidated(pos, gone, broker, db, notifier, settings) -> None:
-    """Цена перепрыгнула ликвидацию: нога потеряна, остальное закрываем, бот на паузу."""
+    """Цена перепрыгнула ликвидацию: нога потеряна, остальное закрываем, бот на паузу.
+
+    Если остальные ноги закрыть не удалось, позиция остаётся «закрывается» (R18).
+    """
     lost = 0.0
     for leg, mark in gone:
         leg_lost = await broker.on_liquidated(leg.exchange, leg.symbol)
@@ -221,11 +253,11 @@ async def _liquidated(pos, gone, broker, db, notifier, settings) -> None:
         leg.amount = 0.0
         leg.margin = 0.0
         leg.open = False
+    pos.realized_pnl -= lost  # до close_pair: его итог в уведомлении и журнале уже с потерей
     db.update_position(pos)
     await close_pair(pos, "ликвидация", broker, db, notifier, settings)
     if pos.status == "closed":
         pos.status = "liquidated"
-    pos.realized_pnl -= lost
     db.update_position(pos)
     db.set_kv("paused", True)
     await notifier.send(

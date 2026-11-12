@@ -152,6 +152,8 @@ def test_gap_past_liquidation_marks_liquidated_and_pauses(db, settings):
     assert stored.realized_pnl == pytest.approx(300 - 1.05 - 250.0)
     assert db.get_kv("paused") is True
     assert notifier.sent[-1][1] == "alert" and "ликвидирован" in notifier.sent[-1][0]
+    # итог в уведомлении о закрытии уже учитывает потерю маржи
+    assert any("Итог: +48.95 USD" in t for t, _ in notifier.sent)
     events = [r["event"] for r in db.conn.execute("SELECT event FROM audit_log")]
     assert "liquidated" in events
 
@@ -213,3 +215,88 @@ def test_drift_triggers_rebalance(db, settings):
     q = make_pos(db, spot_amount=7.5, perp_amount=7.46)
     actions, _, _ = do_guard([q], snap(), broker, db, settings)
     assert kinds(actions) == ["ok"]
+
+
+def test_error_in_one_position_does_not_stop_others(db, settings):
+    class Flaky(Broker):
+        async def on_liquidated(self, exchange, symbol):
+            if not self.liquidated:
+                self.liquidated.append((exchange, symbol))
+                raise RuntimeError("сбой биржи")
+            return await super().on_liquidated(exchange, symbol)
+
+    a, b = make_pos(db), make_pos(db)
+    broker = Flaky(prices={("bybit", SPOT): 140.0})
+    actions, notifier, _ = do_guard([a, b], snap(140.0), broker, db, settings)
+    assert [(x.position_id, x.kind) for x in actions] == [(a.id, "stale"), (b.id, "liquidated")]
+    assert "ошибка проверки" in actions[0].detail
+    assert db.get_position(b.id).status == "liquidated"
+    events = [r["event"] for r in db.conn.execute("SELECT event FROM audit_log")]
+    assert "guard_error" in events
+    assert any(lvl == "alert" and "ошибка проверки" in t for t, lvl in notifier.sent)
+
+
+def test_error_in_notifier_is_contained(db, settings):
+    class Broken(FakeNotifier):
+        async def send(self, text, level="info"):
+            if "Связка X" in text:
+                raise RuntimeError("нет связи")
+            await super().send(text, level)
+
+    a, b = make_pos(db), make_pos(db)
+    b.base = "Y"
+    db.update_position(b)
+    notifier = Broken()
+    out = run(guard([a, b], snap(121.0), Broker(), db, notifier, settings, {}, now_ms=NOW))
+    assert [(x.position_id, x.kind) for x in out] == [(a.id, "stale"), (b.id, "warn")]
+    assert "ошибка проверки" in out[0].detail
+    assert [t for t, _ in notifier.sent] and all("Связка Y" in t for t, _ in notifier.sent)
+
+
+def test_unpriced_spot_leg_still_tops_up_perp(db, settings):
+    p = make_pos(db)
+    broker = Broker()
+    actions, notifier, _ = do_guard([p], snap(127.0, spot_present=False), broker, db, settings)
+    assert kinds(actions) == ["stale", "topup"]
+    assert len(broker.topups) == 1 and broker.calls == []
+    assert any("нет цены" in t for t, _ in notifier.sent)
+
+
+def test_topup_long_side(db, settings):
+    legs = [Leg(None, None, "bybit", PERP, "perp", "long", 7.5, 100.0, 3.0, 250.0),
+            Leg(None, None, "okx", PERP, "perp", "short", 7.5, 100.0, 3.0, 250.0)]
+    p = Position(None, "perp-perp", "X", "calm", "open", 1000.0, 0, legs=legs)
+    db.save_position(p)
+    s = MarketSnapshot(ts=NOW, perps=[PerpInfo("bybit", "X", PERP, 0.0, 8.0, 73.0, 1e6, NOW + H),
+                                      PerpInfo("okx", "X", PERP, 0.0, 8.0, 73.0, 1e6, NOW + H)])
+    broker = Broker()
+    # лонг: ликв. 100*(1-1/3+0.005) ≈ 67.17, запас при 73 ≈ 0.18; цель: ликв. 2*73-100 = 46
+    actions, _, _ = do_guard([p], s, broker, db, settings)
+    assert kinds(actions) == ["topup"]
+    assert broker.topups == [("bybit", PERP, pytest.approx(158.75))]
+    long = db.get_position(p.id).legs[0]
+    lev = long.entry_price * long.amount / long.margin
+    assert margin_buffer(100.0, 73.0, liquidation_price(100.0, "long", lev)) == pytest.approx(0.5)
+
+
+def test_perp_leg_without_margin_is_stale(db, settings):
+    p = make_pos(db)
+    p.legs[1].margin = 0.0
+    db.update_position(p)
+    notifier = FakeNotifier()
+    actions, _, _ = do_guard([p], snap(140.0), Broker(), db, settings, notifier)
+    assert kinds(actions) == ["stale"]
+    assert "маржа" in actions[0].detail and len(notifier.sent) == 1
+    do_guard([p], snap(140.0), Broker(), db, settings, notifier, now=NOW + 1000)
+    assert len(notifier.sent) == 1
+
+
+def test_failed_rebalance_alerts_once_per_hour(db, settings):
+    p = make_pos(db, spot_amount=7.5, perp_amount=7.0)
+    broker = Broker(script=[0.0] * 6)
+    notifier = FakeNotifier()
+    actions, _, _ = do_guard([p], snap(), broker, db, settings, notifier)
+    assert kinds(actions) == ["rebalance"] and len(notifier.sent) == 1
+    assert notifier.sent[0][1] == "alert"
+    actions, _, _ = do_guard([p], snap(), broker, db, settings, notifier, now=NOW + 30_000)
+    assert kinds(actions) == ["rebalance"] and len(notifier.sent) == 1
