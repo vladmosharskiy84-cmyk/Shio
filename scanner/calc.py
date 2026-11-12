@@ -130,7 +130,8 @@ def spot_perp_opportunity(perp: PerpInfo, spot: SpotInfo, fees: Fees,
         rate_day, notional, capital, fees_frac, hold_days,
         pct_diff(perp.mark_price, spot.price),  # >0: фьючерс дороже спота — вход выгоднее
         hist_day, perp.hist_positive_share,
-        {"exchange": perp.exchange, "interval_h": perp.interval_h},
+        {"exchange": perp.exchange, "interval_h": perp.interval_h,
+         "perp_symbol": perp.symbol, "spot_symbol": spot.symbol},
     )
 
 
@@ -155,7 +156,8 @@ def perp_perp_opportunity(a: PerpInfo, b: PerpInfo, fees_a: Fees, fees_b: Fees,
         diff_h * 24, notional, capital, fees_frac, hold_days,
         pct_diff(short.mark_price, long_.mark_price),
         hist_day, None,
-        {"short": short.exchange, "long": long_.exchange},
+        {"short": short.exchange, "long": long_.exchange,
+         "short_symbol": short.symbol, "long_symbol": long_.symbol},
     )
 
 

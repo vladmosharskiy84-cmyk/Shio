@@ -12,13 +12,23 @@ from .calc import PerpInfo, SpotInfo, history_stats, parse_interval_hours
 log = logging.getLogger(__name__)
 
 
-def _usdt_linear_perp(m: dict) -> bool:
-    return bool(m.get("swap") and m.get("linear") and m.get("quote") == "USDT"
-                and m.get("settle") == "USDT" and m.get("active") is not False)
+# котируемые валюты по биржам (USDC считаем равным USD); остальные — только USDT
+_QUOTES = {"hyperliquid": ("USDC", "USDT")}
+_DEFAULT_QUOTES = ("USDT",)
 
 
-def _usdt_spot(m: dict) -> bool:
-    return bool(m.get("spot") and m.get("quote") == "USDT" and m.get("active") is not False)
+def _quotes(exchange: str) -> tuple[str, ...]:
+    return _QUOTES.get(exchange, _DEFAULT_QUOTES)
+
+
+def _linear_perp(exchange: str, m: dict) -> bool:
+    q = _quotes(exchange)
+    return bool(m.get("swap") and m.get("linear") and m.get("quote") in q
+                and m.get("settle") in q and m.get("active") is not False)
+
+
+def _spot(exchange: str, m: dict) -> bool:
+    return bool(m.get("spot") and m.get("quote") in _quotes(exchange) and m.get("active") is not False)
 
 
 def ticker_volume_usd(t: Optional[dict]) -> Optional[float]:
@@ -40,7 +50,7 @@ def normalize_perps(exchange: str, markets: dict, funding: dict, tickers: dict,
     out = []
     for sym, fr in funding.items():
         m = markets.get(sym)
-        if not m or not _usdt_linear_perp(m):
+        if not m or not _linear_perp(exchange, m):
             continue
         rate = fr.get("fundingRate")
         if rate is None:
@@ -62,7 +72,7 @@ def normalize_spots(exchange: str, markets: dict, tickers: dict) -> list[SpotInf
     out = []
     for sym, t in tickers.items():
         m = markets.get(sym)
-        if not m or not _usdt_spot(m):
+        if not m or not _spot(exchange, m):
             continue
         price = t.get("last") or t.get("close")
         out.append(SpotInfo(exchange, m["base"], sym, float(price) if price else None, ticker_volume_usd(t)))

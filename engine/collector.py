@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass, field
 
 from scanner.calc import Fees, PerpInfo, SpotInfo
-from scanner.engine import find_opportunities
+from scanner.engine import find_opportunities, history_targets
 from scanner.exchanges import ExchangeClient
 
 from .config import Settings
@@ -80,16 +80,15 @@ class Collector:
         return snap
 
     async def _enrich_history(self, snap: MarketSnapshot) -> None:
+        """История ставок для лучших связок торговых бирж (тот же круг, что у Finder)."""
         s = self.settings
+        trade = {n for n, e in s.exchanges.items() if e.trade}
+        perps = [p for p in snap.perps if p.exchange in trade]
+        spots = [x for x in snap.spots if x.exchange in trade]
         fees = {n: Fees(e.spot_taker, e.perp_taker) for n, e in s.exchanges.items()}
-        spot_perp, perp_perp = find_opportunities(snap.perps, snap.spots, fees, self._scanner_cfg())
+        spot_perp, perp_perp = find_opportunities(perps, spots, fees, self._scanner_cfg())
         top = s.history_check_top
-        need: set[tuple[str, str]] = set()
-        for op in spot_perp[:top]:
-            need.add((op.extra["exchange"], f"{op.base}/USDT:USDT"))
-        for op in perp_perp[:top]:
-            need.add((op.extra["short"], f"{op.base}/USDT:USDT"))
-            need.add((op.extra["long"], f"{op.base}/USDT:USDT"))
+        need = history_targets(spot_perp[:top], perp_perp[:top])
         jobs = []
         for ex, sym in need:
             perp = snap.perp(ex, sym)
@@ -97,14 +96,29 @@ class Collector:
                 jobs.append(self._client(ex).enrich_history(perp, s.history_periods))
         await asyncio.gather(*jobs, return_exceptions=True)
 
+    async def _contract_size(self, client, symbol: str) -> float:
+        """Сколько монет в одном контракте (OKX считает фьючерсы в контрактах); иначе 1."""
+        markets = client.ex.markets
+        if not markets:
+            markets = await client.ex.load_markets() or client.ex.markets or {}
+        cs = (markets.get(symbol) or {}).get("contractSize")
+        return float(cs) if cs else 1.0
+
     async def order_book(self, exchange: str, symbol: str) -> dict:
-        return await self._client(exchange).order_book(symbol)
+        """Стакан, объёмы уровней — в монетах (контракты пересчитаны)."""
+        client = self._client(exchange)
+        book = await client.order_book(symbol)
+        cs = await self._contract_size(client, symbol)
+        if cs == 1.0:
+            return book
+        return {**book, **{side: [[lvl[0], lvl[1] * cs, *lvl[2:]] for lvl in book.get(side) or []]
+                           for side in ("asks", "bids")}}
 
     async def round_amount(self, exchange: str, symbol: str, amount: float) -> float:
+        """Округлить количество монет по шагу лота биржи (у контрактов — целыми контрактами)."""
         client = self._client(exchange)
-        if not client.ex.markets:
-            await client.ex.load_markets()
-        return client.amount_to_precision(symbol, amount)
+        cs = await self._contract_size(client, symbol)
+        return client.amount_to_precision(symbol, amount / cs) * cs
 
     async def close(self) -> None:
         clients, self._clients = list(self._clients.values()), {}

@@ -31,10 +31,10 @@ exchanges:
     trade: true
     spot_taker: 0.0010
     perp_taker: 0.0005
-  hyperliquid:
+  hyperliquid:             # рынки к USDC (USDC считаем равным USD)
     enabled: true
     trade: true
-    spot_taker: 0.0
+    spot_taker: 0.0007
     perp_taker: 0.00045
   binance:
     enabled: true

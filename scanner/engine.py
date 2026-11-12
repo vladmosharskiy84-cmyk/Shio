@@ -52,6 +52,18 @@ def find_opportunities(perps: list[PerpInfo], spots: list[SpotInfo], fees: dict[
     return sorted(spot_perp, key=key, reverse=True), sorted(perp_perp, key=key, reverse=True)
 
 
+def history_targets(spot_perp: list[Opportunity],
+                    perp_perp: list[Opportunity]) -> set[tuple[str, str]]:
+    """(биржа, символ фьючерса) всех perp-ног этих связок — для загрузки истории ставок."""
+    need = set()
+    for op in spot_perp:
+        need.add((op.extra["exchange"], op.extra["perp_symbol"]))
+    for op in perp_perp:
+        need.add((op.extra["short"], op.extra["short_symbol"]))
+        need.add((op.extra["long"], op.extra["long_symbol"]))
+    return need
+
+
 async def scan(cfg: dict) -> tuple[list[Opportunity], list[Opportunity], dict]:
     fees = enabled_exchanges(cfg)
     clients = {n: ExchangeClient(n) for n in fees}
@@ -68,12 +80,7 @@ async def scan(cfg: dict) -> tuple[list[Opportunity], list[Opportunity], dict]:
         # История ставок для лучших кандидатов: отсекаем разовые всплески
         top = cfg["history_check_top"]
         perp_by_key = {(p.exchange, p.symbol): p for p in perps}
-        need = set()
-        for op in spot_perp[:top]:
-            need.add((op.extra["exchange"], f"{op.base}/USDT:USDT"))
-        for op in perp_perp[:top]:
-            need.add((op.extra["short"], f"{op.base}/USDT:USDT"))
-            need.add((op.extra["long"], f"{op.base}/USDT:USDT"))
+        need = history_targets(spot_perp[:top], perp_perp[:top])
         await asyncio.gather(*(
             clients[ex].enrich_history(perp_by_key[(ex, sym)], cfg["history_periods"])
             for ex, sym in need if (ex, sym) in perp_by_key))

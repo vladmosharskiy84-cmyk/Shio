@@ -34,6 +34,7 @@ def test_spot_perp_math():
     assert op.profit_hold_usd == pytest.approx(250 * 0.009 - 0.75)  # 2.25 - 0.75
     assert op.apr_net_capital == pytest.approx(1.5 / 500 / 10 * 365 * 100)
     assert op.price_diff_pct == pytest.approx(0.5)
+    assert (op.extra["perp_symbol"], op.extra["spot_symbol"]) == ("XYZ/USDT:USDT", "XYZ/USDT")
 
 
 def test_spot_perp_negative_funding_ignored():
@@ -46,7 +47,8 @@ def test_perp_perp_normalizes_intervals():
     a = perp("bybit", 0.0001, interval=1)
     b = perp("binance", 0.0001, interval=8)
     op = perp_perp_opportunity(a, b, FEES, FEES, capital=500, leverage=2, hold_days=7)
-    assert op.extra == {"short": "bybit", "long": "binance"}
+    assert op.extra == {"short": "bybit", "long": "binance",
+                        "short_symbol": "XYZ/USDT:USDT", "long_symbol": "XYZ/USDT:USDT"}
     assert op.rate_per_day == pytest.approx(0.0024 - 0.0003)
     assert op.notional_usd == pytest.approx(500)
     assert op.fees_usd == pytest.approx(500 * 0.002)
@@ -56,7 +58,8 @@ def test_perp_perp_negative_rate_long_side():
     # лонг там, где ставка отрицательная, — нам платят на обеих ногах
     op = perp_perp_opportunity(perp("okx", -0.0002), perp("bybit", 0.0002),
                                FEES, FEES, 500, 2, 7)
-    assert op.extra == {"short": "bybit", "long": "okx"}
+    assert op.extra == {"short": "bybit", "long": "okx",
+                        "short_symbol": "XYZ/USDT:USDT", "long_symbol": "XYZ/USDT:USDT"}
     assert op.rate_per_day == pytest.approx(0.0004 / 8 * 24)
 
 

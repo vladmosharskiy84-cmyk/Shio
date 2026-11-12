@@ -28,7 +28,7 @@ def test_defaults_loaded():
     assert [n for n, e in s.exchanges.items() if e.trade] == ["bybit", "okx", "hyperliquid"]
     assert sorted(n for n, e in s.exchanges.items() if e.watch) == sorted(
         ["binance", "bybit", "okx", "bitget", "gate", "hyperliquid", "whitebit", "mexc"])
-    assert s.exchanges["hyperliquid"].spot_taker == 0
+    assert s.exchanges["hyperliquid"].spot_taker == 0.0007
     assert s.exchanges["gate"].spot_taker == 0.002
     assert s.paper_balances == {"bybit": 170, "okx": 170, "hyperliquid": 160}
     assert s.aggressive_apr == 80

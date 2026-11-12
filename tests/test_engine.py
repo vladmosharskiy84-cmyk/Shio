@@ -58,7 +58,9 @@ def test_full_scan(monkeypatch, cfg, tmp_path):
     assert all(o.base != "SPIKE" for o in spot_perp + perp_perp)
     # BTC с одинаковыми ставками не даёт perp-perp связки
     assert all(o.base != "BTC" for o in perp_perp)
-    best = next(o for o in perp_perp if o.base == "HOT" and o.extra == {"short": "binance", "long": "okx"})
+    best = next(o for o in perp_perp if o.base == "HOT"
+                and (o.extra["short"], o.extra["long"]) == ("binance", "okx"))
+    assert (best.extra["short_symbol"], best.extra["long_symbol"]) == ("HOT/USDT:USDT",) * 2
     assert best.rate_per_day == pytest.approx((0.0010 + 0.0003) * 3)
 
     print_report(spot_perp, perp_perp, stats, cfg)
@@ -79,3 +81,16 @@ def test_exchange_failure_does_not_break_scan(monkeypatch, cfg):
     spot_perp, perp_perp, stats = asyncio.run(scan(cfg))
     assert stats["bybit"] == (0, 0)
     assert spot_perp
+
+
+def test_hyperliquid_accepts_usdc_markets_others_usdt_only():
+    perp = {"base": "A", "quote": "USDC", "settle": "USDC", "swap": True, "linear": True}
+    spot = {"base": "A", "quote": "USDC", "spot": True}
+    markets = {"A/USDC:USDC": perp, "A/USDC": spot}
+    funding = {"A/USDC:USDC": {"fundingRate": 0.0001, "markPrice": 10}}
+    tickers = {"A/USDC": {"last": 10, "quoteVolume": 5e6}}
+    hl = normalize_perps("hyperliquid", markets, funding, {})
+    assert [p.symbol for p in hl] == ["A/USDC:USDC"]
+    assert [s.symbol for s in normalize_spots("hyperliquid", markets, tickers)] == ["A/USDC"]
+    assert normalize_perps("okx", markets, funding, {}) == []
+    assert normalize_spots("okx", markets, tickers) == []

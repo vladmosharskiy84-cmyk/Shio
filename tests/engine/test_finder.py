@@ -135,3 +135,97 @@ def test_history_enriched_and_clients_reused_and_closed(settings):
 
     closed, names = run(go())
     assert set(closed) == names
+
+
+def test_history_enrichment_limited_to_trade_exchanges(settings):
+    # у gate (не торговая) запредельные ставки по всем монетам: раньше топ-N истории
+    # уходил на gate, и торговые кандидаты оставались без истории
+    data = {"bybit": {"HOT": (0.0004, "8h", 100.0)},
+            "okx": {"HOT": (-0.0002, "8h", 100.0)},
+            "gate": {"HOT": (0.0100, "8h", 100.0)}}
+
+    class Ex3(FakeExchange):
+        DATA = data
+        BOOKS: dict = {}
+
+    for name, e in settings.exchanges.items():
+        e.watch = name in data
+    settings.history_check_top = 1
+    snap, _, _ = run(candidates(settings, Ex3))
+    assert snap.perp("bybit", "HOT/USDT:USDT").hist_avg_rate_per_h is not None
+    assert snap.perp("gate", "HOT/USDT:USDT").hist_avg_rate_per_h is None
+
+
+class Hyper(Ex):
+    """Hyperliquid: рынки к USDC (фьючерс HOT/USDC:USDC, спот HOT/USDC)."""
+    HL = {"HOT": (-0.0004, "1h", 100.0)}
+
+    async def load_markets(self):
+        out = {}
+        for b in self.HL:
+            out[f"{b}/USDC:USDC"] = {"base": b, "quote": "USDC", "settle": "USDC", "swap": True,
+                                     "linear": True, "active": True}
+            out[f"{b}/USDC"] = {"base": b, "quote": "USDC", "spot": True, "active": True}
+        return out
+
+    async def fetch_funding_rates(self):
+        return {f"{b}/USDC:USDC": {"fundingRate": r, "interval": i, "markPrice": p}
+                for b, (r, i, p) in self.HL.items()}
+
+    async def fetch_tickers(self, symbols, params):
+        suffix = ":USDC" if params["type"] == "swap" else ""
+        return {f"{b}/USDC{suffix}": {"last": p, "quoteVolume": 5e7}
+                for b, (r, i, p) in self.HL.items()}
+
+    async def fetch_funding_rate_history(self, symbol, since, limit):
+        return [{"fundingRate": self.HL[symbol.split("/")[0]][0]}] * limit
+
+    async def fetch_order_book(self, symbol, limit=None):
+        price = self.HL[symbol.split("/")[0]][2]
+        amount = self.BOOK_DEPTH_USD / price
+        return {"asks": [[price * 1.0001, amount]], "bids": [[price * 0.9999, amount]]}
+
+
+def test_hyperliquid_usdc_markets_trade_with_real_symbols(settings):
+    snap, cands, _ = run(candidates(settings, overrides={"hyperliquid": Hyper}))
+    hl = snap.perp("hyperliquid", "HOT/USDC:USDC")
+    assert hl is not None and hl.hist_avg_rate_per_h is not None
+    pp = next(c for c in cands if c.op.kind == "perp-perp" and c.op.base == "HOT"
+              and any(l["exchange"] == "hyperliquid" for l in c.legs_plan))
+    by_ex = {l["exchange"]: l for l in pp.legs_plan}
+    assert by_ex["hyperliquid"]["symbol"] == "HOT/USDC:USDC"
+    assert by_ex["hyperliquid"]["side"] == "long"  # ставка hyperliquid ниже
+    other = next(l for ex, l in by_ex.items() if ex != "hyperliquid")
+    assert other["symbol"] == "HOT/USDT:USDT"
+    assert pp.liquidity_ok is True
+
+
+def test_okx_contract_size_converted_to_base_units(settings):
+    class Okx(Ex):
+        async def load_markets(self):
+            out = await super().load_markets()
+            out["HOT/USDT:USDT"] = {**out["HOT/USDT:USDT"], "contractSize": 0.01}
+            return out
+
+        async def fetch_order_book(self, symbol, limit=None):
+            # стакан в контрактах: 500 контрактов по 0.01 = 5 монет
+            return {"asks": [[100.0, 500.0]], "bids": [[99.9, 300.0]]}
+
+        def amount_to_precision(self, symbol, amount):
+            return f"{int(amount)}"  # целое число контрактов
+
+    async def go():
+        col = Collector(settings, FakeClientFactory(Ex, {"okx": Okx}))
+        try:
+            book = await col.order_book("okx", "HOT/USDT:USDT")
+            amount = await col.round_amount("okx", "HOT/USDT:USDT", 1.23456)
+            spot_amount = await col.round_amount("okx", "HOT/USDT", 1.9)
+            return book, amount, spot_amount
+        finally:
+            await col.close()
+
+    book, amount, spot_amount = run(go())
+    assert book["asks"] == [[100.0, pytest.approx(5.0)]]
+    assert book["bids"] == [[99.9, pytest.approx(3.0)]]
+    assert amount == pytest.approx(1.23)   # 123 контракта × 0.01
+    assert spot_amount == 1.0              # у спота contractSize нет — без пересчёта

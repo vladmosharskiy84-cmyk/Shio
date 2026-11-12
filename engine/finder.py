@@ -34,13 +34,14 @@ def classify_profile(op: Opportunity, aggressive_apr: float) -> str:
 
 
 def _legs_plan(op: Opportunity) -> list[dict]:
-    perp_sym = f"{op.base}/USDT:USDT"
+    """Ноги связки с настоящими символами рынков (у hyperliquid — к USDC)."""
+    x = op.extra
     if op.kind == "spot-perp":
-        ex = op.extra["exchange"]
-        return [{"exchange": ex, "symbol": f"{op.base}/USDT", "kind": "spot", "side": "long"},
-                {"exchange": ex, "symbol": perp_sym, "kind": "perp", "side": "short"}]
-    return [{"exchange": op.extra["short"], "symbol": perp_sym, "kind": "perp", "side": "short"},
-            {"exchange": op.extra["long"], "symbol": perp_sym, "kind": "perp", "side": "long"}]
+        ex = x["exchange"]
+        return [{"exchange": ex, "symbol": x["spot_symbol"], "kind": "spot", "side": "long"},
+                {"exchange": ex, "symbol": x["perp_symbol"], "kind": "perp", "side": "short"}]
+    return [{"exchange": x["short"], "symbol": x["short_symbol"], "kind": "perp", "side": "short"},
+            {"exchange": x["long"], "symbol": x["long_symbol"], "kind": "perp", "side": "long"}]
 
 
 async def _leg_ok(collector: Collector, leg: dict, notional: float, max_slippage: float) -> bool:
