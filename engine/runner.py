@@ -8,7 +8,7 @@ import time
 from engine import ledger
 from engine.collector import MarketSnapshot
 from engine.decider import (MIN_PAIR_CAPITAL, NO_BALANCE_REASON, affordable_capital,
-                            capital_for_pair, check_limits, decide)
+                            capital_for_pair, check_limits, decide, reserve_capital)
 from engine.executor import close_pair, open_pair
 from engine.finder import find_candidates
 from engine.guardian import guard, leg_buffer
@@ -42,6 +42,7 @@ class Runner:
         self.notifier = notifier
         self.clock = clock
         self.snapshot: MarketSnapshot | None = None
+        self.snapshot_at: int | None = None  # now_ms (по self.clock) последнего удачного сбора
         self.last_marks: dict[tuple[str, str], float] = {}
         self._stopping = False
         self._next_due: dict[str, float] = {}
@@ -71,6 +72,13 @@ class Runner:
                  "автомат" if self.settings.mode == "auto" else "полуавтомат",
                  "виртуальная" if self.settings.virtual else "реальная")
         self._stopping = False
+        try:
+            lost = self.db.fail_taken_commands("бот перезапущен")
+        except Exception:  # noqa: BLE001
+            log.exception("Не удалось разобрать команды, оставшиеся с прошлого запуска")
+        else:
+            if lost:
+                log.warning("Команд, прерванных прошлым запуском: %d (помечены ошибкой)", lost)
         while not self._stopping:
             await self.step()
             await asyncio.sleep(self.loop_sleep_s)
@@ -134,6 +142,7 @@ class Runner:
         await self._expire(now)
         snap = await self.collector.collect()
         self.snapshot = snap
+        self.snapshot_at = now
         log.info("Снимок рынка: %s; фьючерсов %d, спотовых пар %d",
                  ", ".join(f"{n} {'есть данные' if ok else 'нет данных'}"
                            for n, ok in snap.ok.items()), len(snap.perps), len(snap.spots))
@@ -152,9 +161,19 @@ class Runner:
         decisions = decide(cands, self.db.positions(_HELD), self.db.pending_proposals(now),
                            eq, dpnl, paused, self.settings)
         counts = {"propose": 0, "enter": 0, "skip": 0}
+        avail = await self._balances()  # уменьшается по мере принятых связок этого тика
         for i, d in enumerate(decisions):
-            counts[d.action] += 1
             c = d.candidate
+            if d.action in ("propose", "enter"):
+                capital = affordable_capital(c.op.kind, c.legs_plan, c.capital, avail)
+                if capital < MIN_PAIR_CAPITAL:
+                    self.db.audit("skip", {"base": c.op.base, "kind": c.op.kind,
+                                           "reason": NO_BALANCE_REASON})
+                    counts["skip"] += 1
+                    continue
+                c.capital = capital
+                reserve_capital(c.op.kind, c.legs_plan, capital, avail)
+            counts[d.action] += 1
             if d.action == "propose":
                 await self._propose(c, now)
             elif d.action == "enter":
@@ -208,12 +227,20 @@ class Runner:
             log.info("Предложение #%d истекло", pid)
 
     # --- охрана ---
+    def _fresh_snapshot(self, now: int) -> MarketSnapshot:
+        """Последний снимок, если он не старше 2 интервалов сбора, иначе пустой.
+
+        С пустым снимком Guardian берёт последние известные цены и предупреждает об устаревших данных.
+        """
+        max_age = 2 * self.settings.collect_interval_s * 1000
+        if self.snapshot is None or self.snapshot_at is None or now - self.snapshot_at > max_age:
+            return MarketSnapshot(ts=now)
+        return self.snapshot
+
     async def _guard(self) -> None:
-        if self.snapshot is None:
-            return  # данных рынка ещё нет
         now = self.now_ms()
         positions = self.db.positions({"open"})
-        await guard(positions, self.snapshot, self.broker, self.db, self.notifier, self.settings,
+        await guard(positions, self._fresh_snapshot(now), self.broker, self.db, self.notifier, self.settings,
                     self.last_marks, now_ms=now)
         buffers = {}
         for pos in self.db.positions({"open"}):
@@ -278,10 +305,11 @@ class Runner:
         p = self._pending(arg, now)
         eq, dpnl = await self._equity(now)
         others = [x for x in self.db.pending_proposals(now) if x.id != p.id]
-        reason = check_limits(p.base, p.profile, p.capital, self.db.positions(_HELD), others,
+        capital = min(p.capital, capital_for_pair(eq, self.settings))
+        reason = check_limits(p.base, p.profile, capital, self.db.positions(_HELD), others,
                               eq, dpnl, bool(self.db.get_kv("paused", False)), self.settings)
         if reason is None:
-            capital = affordable_capital(p.kind, p.legs_plan, p.capital, await self._balances())
+            capital = affordable_capital(p.kind, p.legs_plan, capital, await self._balances())
             if capital < MIN_PAIR_CAPITAL:
                 reason = NO_BALANCE_REASON
         if reason is not None:
@@ -291,8 +319,13 @@ class Runner:
             p.capital = capital
         p.status = "approved"
         self.db.update_proposal(p)
-        pos = await open_pair(p.legs_plan, p.capital, p.base, p.kind, p.profile,
-                              self.broker, self.db, self.notifier, self.settings)
+        try:
+            pos = await open_pair(p.legs_plan, p.capital, p.base, p.kind, p.profile,
+                                  self.broker, self.db, self.notifier, self.settings)
+        except Exception:
+            p.status = "failed"  # не оставлять «подтверждено» навсегда
+            self.db.update_proposal(p)
+            raise
         p.status = "executed" if pos.status == "open" else "failed"
         self.db.update_proposal(p)
         if p.status == "failed":
@@ -318,12 +351,12 @@ class Runner:
         return f"позиция #{pid}: статус «{pos.status}»"
 
     async def _stop_all(self, arg, now: int) -> str:
+        self.db.set_kv("paused", True)  # сразу: даже если закрытие упадёт, новых связок не будет
         results = []
         for pos in self.db.positions({"open", "closing"}):
             pos = await close_pair(pos, "стоп всё", self.broker, self.db, self.notifier,
                                    self.settings)
             results.append(f"#{pos.id} {pos.base}: {pos.status}")
-        self.db.set_kv("paused", True)
         await self.notifier.send("Стоп всё: позиции закрыты, бот на паузе.", "alert")
         return "; ".join(results + ["бот на паузе"])
 

@@ -188,6 +188,13 @@ class Db:
                 "UPDATE commands SET status='taken' WHERE id=?", [(r["id"],) for r in rows])
         return [Command(**{**dict(r), "status": "taken"}) for r in rows]
 
+    def fail_taken_commands(self, result: str) -> int:
+        """Команды, взятые в работу до сбоя/перезапуска, помечаются ошибкой; вернуть их число."""
+        with self.conn:
+            cur = self.conn.execute(
+                "UPDATE commands SET status='error', result=? WHERE status='taken'", (result,))
+        return cur.rowcount
+
     def finish_command(self, command_id: int, status: str, result: str | None) -> None:
         with self.conn:
             self.conn.execute(

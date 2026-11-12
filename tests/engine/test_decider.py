@@ -173,3 +173,12 @@ def test_affordable_capital_below_min_or_missing_balance():
     from engine.decider import MIN_PAIR_CAPITAL, affordable_capital
     assert affordable_capital("spot-perp", SP, 250.0, {"bybit": 15.0}) < MIN_PAIR_CAPITAL
     assert affordable_capital("perp-perp", PP, 250.0, {"bybit": 170.0}) == 0.0
+
+
+def test_reserve_capital():
+    from engine.decider import reserve_capital
+    bal = {"bybit": 170.0, "okx": 160.0}
+    reserve_capital("spot-perp", SP, 100.0, bal)
+    assert bal == {"bybit": 70.0, "okx": 160.0}
+    reserve_capital("perp-perp", PP, 100.0, bal)
+    assert bal == {"bybit": 20.0, "okx": 110.0}

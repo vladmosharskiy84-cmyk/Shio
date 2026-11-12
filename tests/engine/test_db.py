@@ -104,3 +104,16 @@ def test_kv_audit_heartbeat(db):
     assert row[0] == "событие" and "привет" in row[1]
     db.heartbeat(42)
     assert db.get_kv("heartbeat") == 42
+
+
+def test_fail_taken_commands():
+    from engine.db import Db as _Db
+    d = _Db(":memory:")
+    d.init()
+    a = d.add_command("pause")
+    d.take_new_commands()
+    b = d.add_command("resume")
+    assert d.fail_taken_commands("бот перезапущен") == 1
+    rows = {r["id"]: (r["status"], r["result"]) for r in d.conn.execute("SELECT * FROM commands")}
+    assert rows[a] == ("error", "бот перезапущен")
+    assert rows[b] == ("new", None)

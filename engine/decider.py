@@ -41,6 +41,15 @@ def affordable_capital(kind: str, legs_plan: list[dict], capital: float,
     return max(0.0, min(capital, limit))
 
 
+def reserve_capital(kind: str, legs_plan: list[dict], capital: float,
+                    balances: dict[str, float]) -> None:
+    """Вычесть капитал принятой связки из балансов (spot-perp — весь с X, perp-perp — по половине)."""
+    exchanges = sorted({leg["exchange"] for leg in legs_plan})
+    share = capital / 2 if kind == "perp-perp" else capital
+    for ex in exchanges:
+        balances[ex] = balances.get(ex, 0.0) - share
+
+
 def check_limits(base: str, profile: str, capital: float, open_positions: list[Position],
                  active_proposals: list[Proposal], equity: float, day_pnl: float, paused: bool,
                  settings: Settings) -> str | None:

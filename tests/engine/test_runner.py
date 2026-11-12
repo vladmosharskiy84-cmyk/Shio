@@ -328,6 +328,7 @@ def test_approve_caps_capital_by_current_balance(cfg_path):
         # баланса хватает на часть — открываем на урезанный капитал
         env.db.set_kv("paper_balances", {"bybit": 3000.0})
         env.db.set_kv("day_start_equity", None)
+        env.settings.limits.max_pair_share = 1.0  # чтобы ограничивал именно баланс, а не доля
         cid = env.db.add_command("approve", str(pid))
         run(env.runner.tick_commands())
     finally:
@@ -502,3 +503,128 @@ def test_format_status_lists_positions(cfg_path):
                         "buffers": {str(p.id): 0.82}})
     text = format_status(build_status(db, settings, int(T0 * 1000)))
     assert "HOT" in text and "bybit" in text and "82%" in text and "+0.50" in text
+
+
+def test_approve_caps_capital_by_pair_share(cfg_path):
+    env = Env(cfg_path)
+    try:
+        run(env.runner.tick_collect())
+        p = env.db.pending_proposals(now_ms(env))[0]
+        p.capital = 9000.0  # больше, чем доля на связку от текущего капитала (5000)
+        env.db.update_proposal(p)
+        env.db.add_command("approve", str(p.id))
+        run(env.runner.tick_commands())
+    finally:
+        run(env.collector.close())
+    assert env.proposal(p.id).capital == pytest.approx(5000.0)
+    assert env.db.positions()[0].capital == pytest.approx(5000.0)
+
+
+def test_balances_reserved_within_one_tick(cfg_path):
+    data = {"bybit": {"HOT": (0.001, "8h", 100.0), "ALT": (0.0012, "8h", 50.0)}}
+    env = Env(cfg_path, data=data)
+    try:
+        run(env.runner.tick_collect())
+    finally:
+        run(env.collector.close())
+    props = env.db.pending_proposals(now_ms(env))
+    # первая связка берёт 5000 из 10000, вторая — не больше 0.98 × оставшихся 5000
+    assert [(x.base, x.capital) for x in props] == [("ALT", pytest.approx(5000.0)),
+                                                   ("HOT", pytest.approx(4900.0))]
+
+
+class SwitchCollector:
+    """Collector, у которого можно «сломать» сбор данных."""
+
+    def __init__(self, inner):
+        self.inner = inner
+        self.broken = False
+
+    async def collect(self):
+        if self.broken:
+            raise RuntimeError("нет связи")
+        return await self.inner.collect()
+
+    def __getattr__(self, name):
+        return getattr(self.inner, name)
+
+
+def test_guard_warns_when_market_data_stale(cfg_path):
+    env = Env(cfg_path, mode="auto")
+    col = SwitchCollector(env.collector)
+    runner = Runner(env.settings, col, env.broker, env.db, env.notifier, clock=env.clock)
+    try:
+        run(runner.tick_collect())                 # вход по свежим данным
+        assert len(env.db.positions({"open"})) == 1
+        run(runner.tick_guard())                   # запомнили последние цены
+        assert "устарели" not in env.notifier.texts()
+        col.broken = True
+        env.clock.t += 60
+        run(runner.tick_collect())                 # сбор не удался, снимок старый
+        run(runner.tick_guard())
+        assert "устарели" not in env.notifier.texts()  # ещё в пределах 2 интервалов
+        env.clock.t += 2 * env.settings.collect_interval_s
+        run(runner.tick_collect())
+        run(runner.tick_guard())
+    finally:
+        run(env.collector.close())
+    assert "данные устарели" in env.notifier.texts()
+
+
+def test_stop_all_pauses_even_if_close_fails(cfg_path, monkeypatch):
+    env = Env(cfg_path, mode="auto")
+    seen = {}
+
+    async def broken_close(pos, *args, **kwargs):
+        seen["paused"] = env.db.get_kv("paused")
+        raise RuntimeError("биржа недоступна")
+
+    try:
+        run(env.runner.tick_collect())
+        monkeypatch.setattr("engine.runner.close_pair", broken_close)
+        cid = env.db.add_command("stop_all")
+        run(env.runner.tick_commands())
+    finally:
+        run(env.collector.close())
+    assert seen["paused"] is True
+    assert env.db.get_kv("paused") is True
+    assert env.command(cid)["status"] == "error"
+
+
+def test_approve_open_pair_crash_marks_proposal_failed(cfg_path, monkeypatch):
+    env = Env(cfg_path)
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("сбой исполнителя")
+
+    try:
+        run(env.runner.tick_collect())
+        pid = env.db.pending_proposals(now_ms(env))[0].id
+        monkeypatch.setattr("engine.runner.open_pair", boom)
+        cid = env.db.add_command("approve", str(pid))
+        run(env.runner.tick_commands())
+    finally:
+        run(env.collector.close())
+    assert env.proposal(pid).status == "failed"
+    assert env.command(cid)["status"] == "error" and "сбой исполнителя" in env.command(cid)["result"]
+
+
+def test_taken_commands_failed_on_start(cfg_path):
+    env = Env(cfg_path)
+    cid = env.db.add_command("pause")
+    env.db.take_new_commands()  # взята прошлым запуском, который упал
+    env.runner.loop_sleep_s = 0
+    real_step = env.runner.step
+
+    async def one_step():
+        await real_step()
+        env.runner.stop()
+
+    env.runner.step = one_step
+    try:
+        run(asyncio.wait_for(env.runner.run_forever(), 5))
+    finally:
+        run(env.collector.close())
+    cmd = env.command(cid)
+    assert cmd["status"] == "error" and cmd["result"] == "бот перезапущен"
+    assert env.db.get_kv("paused") is None  # команда не выполнялась повторно
