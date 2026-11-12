@@ -415,6 +415,8 @@ def test_error_classification_with_aiogram_exceptions():
         assert not is_transient(exc), exc
     import aiohttp
     assert is_transient(aiohttp.ClientConnectionError("x"))
+    # HTML-страница 502 от шлюза — временная ошибка, алерт не выбрасываем
+    assert is_transient(ae.ClientDecodeError("bad json", ValueError("x"), "<html>502</html>"))
 
 
 def test_outage_then_recovery_delivers_queued_alert_after_breaker(tmp_path):

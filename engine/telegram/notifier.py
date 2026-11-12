@@ -48,7 +48,7 @@ _TOKEN_RE = re.compile(r"bot\d+:[\w-]+")
 
 # имена классов ошибок aiogram (сам aiogram здесь не импортируется)
 _TRANSIENT_NAMES = {"TelegramNetworkError", "TelegramServerError", "TelegramRetryAfter",
-                    "RestartingTelegram"}
+                    "RestartingTelegram", "ClientDecodeError"}  # HTML 502 от шлюза
 _PERMANENT_NAMES = {"TelegramEntityTooLarge"}  # наследник TelegramNetworkError, но повтор не поможет
 
 
