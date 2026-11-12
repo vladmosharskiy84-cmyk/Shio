@@ -4,6 +4,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import logging.handlers
+import signal
 import sqlite3
 import sys
 from contextlib import contextmanager
@@ -138,9 +140,13 @@ def _setup_logging(settings: Settings) -> None:
     fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
     root = logging.getLogger()
     root.setLevel(logging.INFO)
+    if any(getattr(h, "_shio", False) for h in root.handlers):
+        return  # уже настроено
     for handler in (logging.StreamHandler(sys.stdout),
-                    logging.FileHandler(log_path, encoding="utf-8")):
+                    logging.handlers.RotatingFileHandler(
+                        log_path, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8")):
         handler.setFormatter(fmt)
+        handler._shio = True  # type: ignore[attr-defined]
         root.addHandler(handler)
 
 
@@ -181,11 +187,33 @@ def _build_announcement_sources(settings: Settings, http) -> list:
     return sources
 
 
+def _install_signal_handlers(runner) -> None:
+    """SIGTERM/SIGINT: дозавершить текущий шаг и выйти; повторный сигнал только пишет в журнал."""
+    log = logging.getLogger("engine")
+    loop = asyncio.get_running_loop()
+    received = []
+
+    def on_signal(signame: str) -> None:
+        if received:
+            log.warning("Повторный сигнал: дождитесь завершения")
+            return
+        received.append(signame)
+        log.info("Получен сигнал %s: останавливаюсь после текущего шага", signame)
+        runner.stop()
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(sig, on_signal, sig.name)
+        except (NotImplementedError, RuntimeError, ValueError):
+            pass  # платформа без add_signal_handler (Windows)
+
+
 async def _run(settings: Settings) -> None:
     from engine.broker import PaperBroker
     from engine.collector import Collector
     from engine.launchpool import AiohttpJson
     from engine.runner import Runner
+    from engine.watchdog import HealthPinger
     from engine.telegram import bot as tgbot
 
     with _open_db(settings) as db:
@@ -194,12 +222,14 @@ async def _run(settings: Settings) -> None:
         tg_task = None
         notifier = None
         http = AiohttpJson()
+        pinger = HealthPinger.from_env()
         try:
             broker = PaperBroker(collector, settings, db)
             notifier, token = tgbot.build_notifier(settings, db)
             sources = _build_announcement_sources(settings, http)
             runner = Runner(settings, collector, broker, db, notifier,
-                            announcement_sources=sources)
+                            announcement_sources=sources, pinger=pinger)
+            _install_signal_handlers(runner)
             if token:
                 async def run_tg(stop_event: asyncio.Event) -> None:
                     await tgbot.run_telegram(token, settings, db, notifier, stop_event)
@@ -222,6 +252,7 @@ async def _run(settings: Settings) -> None:
                     await aclose()
                 except Exception:  # noqa: BLE001
                     logging.getLogger("engine").exception("Telegram: ошибка при остановке")
+            await pinger.aclose()
             await http.close()
             await collector.close()
 

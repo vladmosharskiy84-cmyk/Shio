@@ -985,3 +985,73 @@ def test_report_failure_does_not_skip_remaining_commands(cfg_path, caplog):
     assert env.command(second)["status"] == "done"
     assert env.db.get_kv("paused") is False
     assert any("отчёт" in r.getMessage() or "Команда" in r.getMessage() for r in caplog.records)
+
+
+class RecordingPinger:
+    def __init__(self, env, exc=None):
+        self.env, self.exc, self.seen = env, exc, []
+
+    async def ping(self, fail=False):
+        self.seen.append(self.env.db.get_kv("heartbeat"))
+        if self.exc:
+            raise self.exc
+        return True
+
+
+def test_heartbeat_pings_after_db_write(cfg_path):
+    env = Env(cfg_path)
+    env.runner.pinger = RecordingPinger(env)
+    run(env.runner.tick_heartbeat())
+    assert env.runner.pinger.seen == [int(T0 * 1000)]
+
+
+def test_heartbeat_pinger_exception_isolated(cfg_path):
+    env = Env(cfg_path)
+    env.runner.pinger = RecordingPinger(env, exc=RuntimeError("x"))
+    run(env.runner.step())
+    assert env.db.get_kv("heartbeat") == int(T0 * 1000)
+
+
+def test_stop_waits_for_current_step(cfg_path):
+    env = Env(cfg_path)
+    env.runner.loop_sleep_s = 0
+    done = []
+    orig = env.runner.tick_commands
+
+    async def tick():
+        env.runner.stop()
+        await asyncio.sleep(0)
+        await orig()
+        done.append(1)
+
+    env.runner.tick_commands = tick
+    env.runner._jobs = [(n, i, tick if n == "commands" else t) for n, i, t in env.runner._jobs]
+
+    async def scenario():
+        await asyncio.wait_for(env.runner.run_forever(), 5)
+
+    run(scenario())
+    assert done == [1]
+    assert env.db.get_kv("heartbeat") == int(T0 * 1000)  # остальные задачи шага выполнены
+
+
+def test_setup_logging_idempotent(cfg_path):
+    import logging.handlers
+    from engine.__main__ import _setup_logging
+
+    settings = load_settings(cfg_path)
+    root = logging.getLogger()
+    before = list(root.handlers)
+    try:
+        _setup_logging(settings)
+        _setup_logging(settings)
+        added = [h for h in root.handlers if h not in before]
+        files = [h for h in added if isinstance(h, logging.handlers.RotatingFileHandler)]
+        assert len(files) == 1
+        assert files[0].maxBytes == 10 * 1024 * 1024 and files[0].backupCount == 5
+        assert len(added) == 2
+    finally:
+        for h in list(root.handlers):
+            if h not in before:
+                root.removeHandler(h)
+                h.close()

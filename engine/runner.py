@@ -40,13 +40,14 @@ class Runner:
     loop_sleep_s = 1.0
 
     def __init__(self, settings, collector, broker, db, notifier, clock=time.time,
-                 announcement_sources=None):
+                 announcement_sources=None, pinger=None):
         self.settings = settings
         self.collector = collector
         self.broker = broker
         self.db = db
         self.notifier = notifier
         self.clock = clock
+        self.pinger = pinger
         self.announcement_sources = list(announcement_sources or [])
         self.snapshot: MarketSnapshot | None = None
         self.snapshot_at: int | None = None  # now_ms (по self.clock) последнего удачного сбора
@@ -212,6 +213,11 @@ class Runner:
 
     async def _heartbeat(self) -> None:
         self.db.heartbeat(self.now_ms())
+        if self.pinger is not None:
+            try:
+                await asyncio.wait_for(self.pinger.ping(), 10)
+            except Exception as exc:  # noqa: BLE001 — сторож не должен ломать цикл
+                log.warning("Сторож: пинг не выполнен (%s)", type(exc).__name__)
 
     async def _reconcile(self) -> None:
         issues = await reconcile(self.broker, self.db, self.notifier, self.settings)
