@@ -28,11 +28,11 @@ def db():
     return d
 
 
-def mkpos(db, status, spot=7.5, perp=7.5, reason=None):
+def mkpos(db, status, spot=7.5, perp=7.5, reason=None, entry=100.0):
     legs = [
-        Leg(None, None, "bybit", SPOT, "spot", "long", spot, 100.0, 1.0, spot * 100.0,
+        Leg(None, None, "bybit", SPOT, "spot", "long", spot, entry, 1.0, spot * 100.0,
             open=spot > 0),
-        Leg(None, None, "okx", PERP, "perp", "short", perp, 100.0, 3.0, perp * 100.0 / 3,
+        Leg(None, None, "okx", PERP, "perp", "short", perp, entry, 3.0, perp * 100.0 / 3,
             open=perp > 0),
     ]
     pos = Position(None, "spot-perp", "X", "calm", status, 1000.0, 1, close_reason=reason, legs=legs)
@@ -87,6 +87,7 @@ def test_unknown_exchange_position_reported_not_touched(db, settings):
     broker.amounts["bybit"] = {"ZZZ/USDT": 5.0}
     issues = run(reconcile(broker, db, notifier, settings))
     assert len(issues) == 1 and "неизвестная позиция" in issues[0]
+    assert audits(db, "reconcile_unknown")
     assert ("warn" in [lvl for _, lvl in notifier.sent])
     assert broker.calls == []
 
@@ -151,6 +152,7 @@ def test_open_amounts_error_leaves_positions_untouched(db, settings):
     broker.open_amounts = flaky
     issues = run(reconcile(broker, db, notifier, settings))
     assert any("не удалось сверить" in i and "okx" in i for i in issues)
+    assert audits(db, "reconcile_error")
     assert db.get_position(on_okx.id).status == "open"
     assert broker.calls == []
 
@@ -167,3 +169,60 @@ def test_only_trade_exchanges_queried(db, settings):
     broker.open_amounts = spy
     run(reconcile(broker, db, FakeNotifier(), settings))
     assert sorted(asked) == ["bybit", "hyperliquid", "okx"]
+
+
+def test_orphan_leg_without_entry_price_has_no_fabricated_pnl(db, settings):
+    pos = mkpos(db, "opening", spot=0.0, perp=0.0, entry=0.0)
+    broker = ScriptedBroker()
+    hold(broker, spot=3.0)
+    run(reconcile(broker, db, FakeNotifier(), settings))
+    got = db.get_position(pos.id)
+    assert got.status == "failed"
+    assert got.realized_pnl == pytest.approx(-0.3)  # только комиссия закрытия
+
+
+def test_unknown_entry_price_reported(db, settings):
+    mkpos(db, "opening", spot=0.0, perp=0.0, entry=0.0)
+    broker = ScriptedBroker(prices={"ref_error": RuntimeError("нет цены")})
+    hold(broker, spot=3.0)
+    issues = run(reconcile(broker, db, FakeNotifier(), settings))
+    assert any("цена входа неизвестна" in i for i in issues)
+    assert audits(db, "reconcile_entry_price_unknown")
+    assert broker.calls  # всё равно закрыто
+
+
+def test_closing_leftover_liquidation_ends_liquidated(db, settings):
+    pos = mkpos(db, "closing", spot=0.0, perp=7.5, reason="ликвидация")
+    broker = ScriptedBroker()
+    hold(broker, perp=7.5)
+    run(reconcile(broker, db, FakeNotifier(), settings))
+    assert db.get_position(pos.id).status == "liquidated"
+
+
+def test_closing_incomplete_stays_closing_with_alert(db, settings):
+    pos = mkpos(db, "closing", spot=0.0, perp=7.5, reason="ручное закрытие")
+    broker, notifier = ScriptedBroker(script=[0.0] * 20), FakeNotifier()
+    hold(broker, perp=7.5)
+    run(reconcile(broker, db, notifier, settings))
+    assert db.get_position(pos.id).status == "closing"
+    assert "alert" in [lvl for _, lvl in notifier.sent]
+
+
+def test_non_trade_exchange_leg_reported_and_skipped(db, settings):
+    pos = mkpos(db, "open")
+    pos.legs[0].exchange = "binance"
+    db.update_position(pos)
+    issues = run(reconcile(ScriptedBroker(), db, FakeNotifier(), settings))
+    assert any("не торговая" in i for i in issues)
+    assert db.get_position(pos.id).status == "open"
+
+
+def test_open_amount_mismatch_synced_with_warning(db, settings):
+    pos = mkpos(db, "open", spot=7.5, perp=7.5)
+    broker, notifier = ScriptedBroker(), FakeNotifier()
+    hold(broker, spot=7.5, perp=7.0)
+    issues = run(reconcile(broker, db, notifier, settings))
+    got = db.get_position(pos.id)
+    assert got.status == "open" and got.legs[1].amount == pytest.approx(7.0)
+    assert issues and "warn" in [lvl for _, lvl in notifier.sent]
+    assert broker.calls == []

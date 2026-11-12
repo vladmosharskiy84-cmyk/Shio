@@ -43,6 +43,25 @@ def _sync_legs(pos: Position, held) -> bool:
     return changed
 
 
+async def _fix_entry_prices(pos: Position, broker, db, issues: list[str]) -> None:
+    """Нога, подтянутая с биржи без цены входа, получает текущую цену (иначе P&L закрытия фиктивен)."""
+    for leg in pos.legs:
+        if leg.amount <= 0 or leg.entry_price > 0:
+            continue
+        side = "buy" if leg.side == "long" else "sell"
+        try:
+            price = await broker.ref_price(leg.exchange, leg.symbol, side)
+        except Exception:  # noqa: BLE001
+            price = 0.0
+        if price and price > 0:
+            leg.entry_price = price
+            leg.margin = leg.amount * price / leg.leverage if leg.kind == "perp" else leg.amount * price
+            continue
+        issues.append(f"цена входа неизвестна: связка {pos.base}, {leg.exchange} {leg.symbol}")
+        db.audit("reconcile_entry_price_unknown", {"position_id": pos.id, "exchange": leg.exchange,
+                                                   "symbol": leg.symbol})
+
+
 def _zero_legs(pos: Position) -> None:
     for leg in pos.legs:
         leg.amount = 0.0
@@ -83,9 +102,15 @@ async def reconcile(broker, db, notifier, settings) -> list[str]:
                 await notifier.send(text, "warn")
 
     for pos in positions:
-        if any(l.exchange not in held for l in pos.legs):  # биржа не опрошена или недоступна
+        skipped = {l.exchange for l in pos.legs if l.exchange not in held}
+        if skipped:  # биржа недоступна (уже в списке) или не торговая
+            for ex in sorted(skipped - failed):
+                text = f"связка {pos.base}: биржа {ex} не торговая, сверка пропущена"
+                issues.append(text)
+                db.audit("reconcile_skipped", {"position_id": pos.id, "exchange": ex})
+                await notifier.send(text, "warn")
             continue
-        handler = {"opening": _opening, "closing": _closing, "open": _open}[pos.status]
+        handler = _HANDLERS[pos.status]
         await handler(pos, held, broker, db, notifier, settings, issues)
     return issues
 
@@ -98,6 +123,7 @@ async def _repair(pos, db, notifier, issues, event, text, level, **detail) -> No
 
 async def _opening(pos, held, broker, db, notifier, settings, issues) -> None:
     _sync_legs(pos, held)
+    await _fix_entry_prices(pos, broker, db, issues)
     amounts = [l.amount for l in pos.legs]
     if all(a > 0 for a in amounts) and all(_same(a, amounts[0]) for a in amounts):
         pos.status = "open"
@@ -125,6 +151,7 @@ async def _opening(pos, held, broker, db, notifier, settings, issues) -> None:
 
 async def _closing(pos, held, broker, db, notifier, settings, issues) -> None:
     _sync_legs(pos, held)
+    await _fix_entry_prices(pos, broker, db, issues)
     if any(l.amount > 0 for l in pos.legs):
         reason = pos.close_reason or "закрытие после перезапуска"
         text = f"Связка {pos.base}: закрытие не было завершено, закрываю остаток."
@@ -147,6 +174,11 @@ async def _closing(pos, held, broker, db, notifier, settings, issues) -> None:
 async def _open(pos, held, broker, db, notifier, settings, issues) -> None:
     missing = [l for l in pos.legs if l.open and _broker_amount(held, l) <= _EPS]
     if not missing:
+        if _sync_legs(pos, held):
+            db.update_position(pos)
+            await _repair(pos, db, notifier, issues, "reconcile_repair",
+                          f"Связка {pos.base}: объёмы в базе не совпали с биржей, исправлены "
+                          f"(выравнивание — задача Guardian).", "warn", action="amounts_synced")
         return
     if len(missing) == len([l for l in pos.legs if l.open]):
         _zero_legs(pos)
@@ -163,8 +195,12 @@ async def _open(pos, held, broker, db, notifier, settings, issues) -> None:
     for leg in pos.legs:  # оставшиеся ноги — по объёму брокера
         if leg.open:
             leg.amount = _broker_amount(held, leg)
+    await _fix_entry_prices(pos, broker, db, issues)
     pos = await close_pair(pos, R_LEG_NOT_FOUND, broker, db, notifier, settings)
     await _repair(pos, db, notifier, issues, "reconcile_repair",
                   f"Связка {pos.base}: на бирже нет ноги "
                   f"{', '.join(f'{l.exchange} {l.symbol}' for l in missing)}, закрываю остальное.",
                   "alert", action="closed_rest", result=pos.status)
+
+
+_HANDLERS = {"opening": _opening, "closing": _closing, "open": _open}
