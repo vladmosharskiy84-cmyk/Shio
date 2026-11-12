@@ -107,20 +107,85 @@ def _setup_logging(settings: Settings) -> None:
         root.addHandler(handler)
 
 
+TELEGRAM_BACKOFF_S = 10.0
+
+
+async def _telegram_supervisor(run, stop: asyncio.Event, backoff_s: float | None = None) -> None:
+    """Перезапускает задачу Telegram после сбоя (пауза backoff_s); движок это не затрагивает."""
+    log = logging.getLogger("engine")
+    pause = TELEGRAM_BACKOFF_S if backoff_s is None else backoff_s
+    while not stop.is_set():
+        try:
+            await run(stop)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — Telegram не должен останавливать торговый цикл
+            log.exception("Telegram: задача упала, перезапуск через %g с. Движок работает дальше.",
+                          pause)
+        if stop.is_set():
+            return
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=pause)
+        except asyncio.TimeoutError:
+            pass
+
+
 async def _run(settings: Settings) -> None:
     from engine.broker import PaperBroker
     from engine.collector import Collector
-    from engine.notifier import LogNotifier
     from engine.runner import Runner
+    from engine.telegram import bot as tgbot
 
     with _open_db(settings) as db:
         collector = Collector(settings)
+        stop = asyncio.Event()
+        tg_task = None
         try:
             broker = PaperBroker(collector, settings, db)
-            runner = Runner(settings, collector, broker, db, LogNotifier(db))
+            notifier, token = tgbot.build_notifier(settings, db)
+            runner = Runner(settings, collector, broker, db, notifier)
+            if token:
+                async def run_tg(stop_event: asyncio.Event) -> None:
+                    await tgbot.run_telegram(token, settings, db, notifier, stop_event)
+
+                tg_task = asyncio.ensure_future(_telegram_supervisor(run_tg, stop))
             await runner.run_forever()
         finally:
+            stop.set()
+            if tg_task is not None:
+                try:
+                    await asyncio.wait_for(tg_task, timeout=10)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    tg_task.cancel()
+                except Exception:  # noqa: BLE001
+                    logging.getLogger("engine").exception("Telegram: ошибка при остановке")
             await collector.close()
+
+
+def _cmd_telegram_id(settings: Settings, args) -> int:
+    import os
+
+    token = os.environ.get("SHIO_TELEGRAM_TOKEN", "").strip()
+    if not token:
+        print("Не задана переменная окружения SHIO_TELEGRAM_TOKEN "
+              "(токен бота от @BotFather): export SHIO_TELEGRAM_TOKEN=...")
+        return 2
+    from engine.telegram.bot import discover_chat_id
+
+    print("Напишите любое сообщение вашему боту в Telegram. Жду до 2 минут...")
+    try:
+        chat_id = asyncio.run(discover_chat_id(token, timeout_s=120))
+    except KeyboardInterrupt:
+        print("Остановлено.")
+        return 1
+    except Exception as exc:  # noqa: BLE001
+        print(f"Не удалось связаться с Telegram: {exc}")
+        return 1
+    if chat_id is None:
+        print("За 2 минуты никто не написал боту. Попробуйте ещё раз.")
+        return 1
+    print(f"Ваш chat_id: {chat_id}")
+    return 0
 
 
 def _cmd_run(settings: Settings, args) -> int:
@@ -155,6 +220,8 @@ def _parser() -> argparse.ArgumentParser:
         sp.set_defaults(fn=fn)
     sub.add_parser("stop", help="закрыть все связки и поставить на паузу").set_defaults(fn=_cmd_stop)
     sub.add_parser("pause", help="не открывать новые связки").set_defaults(fn=_cmd_pause)
+    sub.add_parser("telegram-id", help="узнать свой chat_id для Telegram (ждёт сообщение боту 2 минуты)"
+                   ).set_defaults(fn=_cmd_telegram_id)
     sub.add_parser("resume", help="снять паузу").set_defaults(fn=_cmd_resume)
     return p
 
