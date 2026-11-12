@@ -10,7 +10,11 @@ _ACCRUING = ("open", "closing")
 
 
 def accrue(snapshot: MarketSnapshot, positions: list[Position], db, now_ms: int) -> list[tuple[Leg, float]]:
-    """Начислить наступившие выплаты по открытым perp-ногам. Возвращает только новые."""
+    """Начислить наступившие выплаты по открытым perp-ногам. Возвращает только новые.
+
+    До момента выплаты ставка ноги обновляется из снимка на каждом вызове, пока
+    снимок указывает на ту же выплату: начисляется последний прогноз перед выплатой.
+    """
     booked: list[tuple[Leg, float]] = []
     for pos in positions:
         if pos.status not in _ACCRUING:
@@ -32,6 +36,12 @@ def accrue(snapshot: MarketSnapshot, positions: list[Position], db, now_ms: int)
                     booked.append((leg, amount))
                 leg.pending_rate, leg.pending_ts = info.funding_rate, info.next_funding_ts
                 changed = True
+            elif (leg.pending_ts is not None and info.next_funding_ts == leg.pending_ts
+                  and now_ms < leg.pending_ts and info.funding_rate is not None):
+                # до выплаты биржа уточняет прогноз ставки: начислим по последнему
+                if info.funding_rate != leg.pending_rate:
+                    leg.pending_rate = info.funding_rate
+                    changed = True
             elif leg.pending_ts is None or leg.pending_rate is None:
                 leg.pending_rate, leg.pending_ts = info.funding_rate, info.next_funding_ts
                 changed = True

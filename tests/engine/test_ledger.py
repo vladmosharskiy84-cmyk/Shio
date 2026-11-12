@@ -160,3 +160,17 @@ def test_day_pnl_relative_to_day_start(db):
     assert day_pnl(db, d0 + 2 * H, 98.0) == pytest.approx(-2.0)
     assert day_pnl(db, d0 + DAY, 110.0) == 0.0  # новые сутки UTC
     assert day_pnl(db, d0 + DAY + H, 111.0) == pytest.approx(1.0)
+
+
+def test_rate_change_mid_interval_books_latest_predicted_rate(db):
+    leg = perp_leg(pending_rate=0.001, pending_ts=1000)
+    p = pos(db, leg)
+    # до выплаты прогноз ставки меняется — запоминаем последний
+    assert accrue(snap(rate=0.002, next_ts=1000), [p], db, 400) == []
+    assert accrue(snap(rate=0.003, next_ts=1000), [p], db, 900) == []
+    assert (leg.pending_rate, leg.pending_ts) == (0.003, 1000)
+    assert db.get_position(p.id).legs[0].pending_rate == 0.003
+    # в момент выплаты биржа уже показывает следующий период — начисляем по 0.003
+    out = accrue(snap(rate=0.0005, next_ts=1000 + 8 * H), [p], db, 1000)
+    assert out == [(leg, pytest.approx(10 * 2.0 * 0.003))]
+    assert (leg.pending_rate, leg.pending_ts) == (0.0005, 1000 + 8 * H)
