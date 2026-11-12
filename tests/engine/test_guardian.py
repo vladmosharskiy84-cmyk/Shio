@@ -315,3 +315,65 @@ def test_liquidation_with_incomplete_close_ends_liquidated_after_reconcile(db, s
     run(reconcile(broker, db, FakeNotifier(), settings))
     stored = db.get_position(p.id)
     assert stored.status == "liquidated" and stored.close_reason == "ликвидация"
+
+
+def make_closing(db, reason="ставка развернулась", spot_open=True, perp_margin=250.0):
+    p = make_pos(db)
+    p.status = "closing"
+    p.close_reason = reason
+    if not spot_open:
+        spot = p.legs[0]
+        spot.amount, spot.margin, spot.open = 0.0, 0.0, False
+    p.legs[1].margin = perp_margin
+    db.update_position(p)
+    return db.get_position(p.id)
+
+
+def test_closing_position_retried_each_tick_keeps_reason(db, settings):
+    p = make_closing(db)
+    broker = Broker()
+    actions, notifier, _ = do_guard([p], snap(), broker, db, settings)
+    assert kinds(actions) == ["close"]
+    assert [(c[0], c[3], c[4]) for c in broker.calls] == [("okx", "buy", 7.5), ("bybit", "sell", 7.5)]
+    stored = db.get_position(p.id)
+    assert stored.status == "closed" and stored.close_reason == "ставка развернулась"
+
+
+def test_closing_retry_alerts_once_per_hour(db, settings):
+    p = make_closing(db)
+    broker = Broker(script=[0.0] * 30)
+    notifier = FakeNotifier()
+    actions, _, _ = do_guard([p], snap(), broker, db, settings, notifier)
+    assert kinds(actions) == ["close"] and db.get_position(p.id).status == "closing"
+    alerts = [t for t, lvl in notifier.sent if lvl == "alert"]
+    assert len(alerts) == 1
+    do_guard([db.get_position(p.id)], snap(), broker, db, settings, notifier, now=NOW + 30_000)
+    assert len([t for t, lvl in notifier.sent if lvl == "alert"]) == 1
+    assert len(broker.calls) == 2 * settings.limits.leg_retries  # попытка была и во второй раз
+    do_guard([db.get_position(p.id)], snap(), broker, db, settings, notifier, now=NOW + H)
+    assert len([t for t, lvl in notifier.sent if lvl == "alert"]) == 2
+
+
+def test_closing_perp_leg_past_liquidation_booked_liquidated(db, settings):
+    p = make_closing(db, spot_open=False)
+    broker = Broker(lost=250.0)
+    actions, notifier, _ = do_guard([p], snap(140.0), broker, db, settings)
+    assert kinds(actions) == ["liquidated"]
+    assert broker.liquidated == [("okx", PERP)] and broker.calls == []
+    stored = db.get_position(p.id)
+    assert stored.status == "liquidated"
+    assert stored.close_reason == "ставка развернулась"  # причина закрытия сохранена
+    assert stored.realized_pnl == pytest.approx(-250.0)  # потеря маржи (комиссий в make_pos нет)
+    assert not stored.legs[1].open and stored.legs[1].margin == 0
+    assert db.get_kv("paused") is True
+    assert any(lvl == "alert" and "ликвидирован" in t for t, lvl in notifier.sent)
+
+
+def test_closing_perp_leg_low_buffer_tops_up_before_retry(db, settings):
+    p = make_closing(db)
+    broker = Broker(script=[0.0] * 3)  # закрыть перп-ногу снова не удалось
+    actions, _, _ = do_guard([p], snap(127.0), broker, db, settings)
+    assert kinds(actions) == ["topup", "close"]
+    assert len(broker.topups) == 1 and broker.topups[0][:2] == ("okx", PERP)
+    stored = db.get_position(p.id)
+    assert stored.status == "closing" and stored.legs[1].margin > 250.0

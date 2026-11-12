@@ -609,6 +609,41 @@ def test_approve_open_pair_crash_marks_proposal_failed(cfg_path, monkeypatch):
     assert env.command(cid)["status"] == "error" and "сбой исполнителя" in env.command(cid)["result"]
 
 
+def _crashing_open_pair(env):
+    """open_pair, который успел открыть первую ногу и упал (позиция «opening»)."""
+    async def crash(plan, capital, base, kind, profile, broker, db, notifier, settings):
+        legs = [Leg(None, None, p["exchange"], p["symbol"], p["kind"], p["side"], 0.0, 0.0, 1.0, 0.0)
+                for p in plan]
+        db.save_position(Position(None, kind, base, profile, "opening", capital, 0, legs=legs))
+        await broker.market_ioc(plan[0]["exchange"], plan[0]["symbol"], plan[0]["kind"], "buy",
+                                1.0, 0.01)
+        raise RuntimeError("сбой исполнителя")
+    return crash
+
+
+@pytest.mark.parametrize("mode", ["auto", "semi"])
+def test_open_pair_crash_triggers_reconcile(cfg_path, monkeypatch, mode):
+    env = Env(cfg_path, mode=mode)
+    try:
+        if mode == "semi":
+            run(env.runner.tick_collect())
+            pid = env.db.pending_proposals(now_ms(env))[0].id
+        monkeypatch.setattr("engine.runner.open_pair", _crashing_open_pair(env))
+        if mode == "auto":
+            run(env.runner.tick_collect())
+        else:
+            env.db.add_command("approve", str(pid))
+            run(env.runner.tick_commands())
+    finally:
+        run(env.collector.close())
+    # сверка сразу закрыла осиротевшую ногу, не дожидаясь 10-минутного тика
+    [pos] = env.db.positions()
+    assert pos.status == "failed" and pos.close_reason == "незавершённое открытие"
+    assert run(env.broker.open_amounts("bybit")) == {}
+    if mode == "semi":
+        assert env.proposal(pid).status == "failed"
+
+
 def test_taken_commands_failed_on_start(cfg_path):
     env = Env(cfg_path)
     cid = env.db.add_command("pause")

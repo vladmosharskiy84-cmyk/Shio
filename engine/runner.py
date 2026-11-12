@@ -178,8 +178,7 @@ class Runner:
                 await self._propose(c, now)
             elif d.action == "enter":
                 log.info("Автомат: вхожу в связку %s %s", c.op.kind, c.op.base)
-                await open_pair(c.legs_plan, c.capital, c.op.base, c.op.kind, c.profile,
-                                self.broker, self.db, self.notifier, self.settings)
+                await self._open_pair(c.legs_plan, c.capital, c.op.base, c.op.kind, c.profile)
             elif i < _LOG_SKIPS:
                 log.info("Пропуск %s %s (%.1f%% годовых): %s", c.op.kind, c.op.base,
                          c.op.apr_net_capital, d.reason)
@@ -200,6 +199,23 @@ class Runner:
             c.capital = capital
             out.append(c)
         return out
+
+    async def _open_pair(self, plan, capital, base, kind, profile):
+        """open_pair; если он упал посреди открытия — сразу сверка с брокером.
+
+        Иначе позиция «opening» с исполненной ногой осталась бы без охраны до
+        следующей плановой сверки. Исключение пробрасывается дальше.
+        """
+        try:
+            return await open_pair(plan, capital, base, kind, profile,
+                                   self.broker, self.db, self.notifier, self.settings)
+        except Exception as exc:
+            self.db.audit("open_pair_error", {"base": base, "kind": kind, "error": repr(exc)})
+            try:
+                await self._reconcile()
+            except Exception:  # noqa: BLE001 — исходная ошибка важнее
+                log.exception("Сверка после сбоя открытия %s не удалась", base)
+            raise
 
     def _expected_profit(self, apr: float, capital: float) -> float:
         """Ожидаемая прибыль за hold_days при данной доходности (% годовых на капитал)."""
@@ -239,7 +255,7 @@ class Runner:
 
     async def _guard(self) -> None:
         now = self.now_ms()
-        positions = self.db.positions({"open"})
+        positions = self.db.positions({"open", "closing"})
         await guard(positions, self._fresh_snapshot(now), self.broker, self.db, self.notifier, self.settings,
                     self.last_marks, now_ms=now)
         buffers = {}
@@ -320,8 +336,7 @@ class Runner:
         p.status = "approved"
         self.db.update_proposal(p)
         try:
-            pos = await open_pair(p.legs_plan, p.capital, p.base, p.kind, p.profile,
-                                  self.broker, self.db, self.notifier, self.settings)
+            pos = await self._open_pair(p.legs_plan, p.capital, p.base, p.kind, p.profile)
         except Exception:
             p.status = "failed"  # не оставлять «подтверждено» навсегда
             self.db.update_proposal(p)

@@ -1,8 +1,12 @@
-"""Guardian: каждые 30 с защищает открытые связки.
+"""Guardian: каждые 30 с защищает открытые и недозакрытые связки.
 
 Порядок проверок для позиции в статусе «open»: цены ног → цена за ликвидацией →
 запас ≤ act_buffer (довнести маржу, иначе закрыть) → запас ≤ warn_buffer →
 перекос объёмов ног → разворот ставки.
+
+Позиция в статусе «closing» (закрытие не завершилось): цена за ликвидацией у
+оставшихся perp-ног → запас ≤ act_buffer (довнести маржу) → повтор close_pair с
+исходной причиной. Тревоги по такой позиции — не чаще раза в час.
 """
 from __future__ import annotations
 
@@ -81,11 +85,12 @@ async def guard(positions: list[Position], snapshot: MarketSnapshot, broker, db,
     now = _now_ms() if now_ms is None else now_ms
     actions: list[GuardAction] = []
     for pos in positions:
-        if pos.status != "open":
+        handler = _HANDLERS.get(pos.status)
+        if handler is None:
             continue
         try:
-            actions += await _guard_position(pos, snapshot, broker, db, notifier, settings,
-                                             last_marks, now)
+            actions += await handler(pos, snapshot, broker, db, notifier, settings,
+                                     last_marks, now)
         except Exception as exc:  # noqa: BLE001 — сбой одной связки не должен оставить без защиты остальные
             actions.append(GuardAction(pos.id, "stale", f"ошибка проверки: {exc!r}"))
             try:
@@ -102,25 +107,27 @@ async def guard(positions: list[Position], snapshot: MarketSnapshot, broker, db,
 
 
 class _ThrottledNotifier:
-    """Пропускает уведомления не чаще раза в час на ключ kv."""
+    """Пропускает уведомления не чаще раза в час на ключ kv.
 
-    def __init__(self, notifier, db, key: str, now_ms: int):
+    levels: какие уровни ограничивать (None — все); остальные проходят всегда.
+    """
+
+    def __init__(self, notifier, db, key: str, now_ms: int, levels: set[str] | None = None):
         self.notifier, self.db, self.key, self.now_ms = notifier, db, key, now_ms
+        self.levels = levels
 
     async def send(self, text: str, level: str = "info") -> None:
-        if _once_per_hour(self.db, self.key, self.now_ms):
+        if self.levels is not None and level not in self.levels:
+            await self.notifier.send(text, level)
+        elif _once_per_hour(self.db, self.key, self.now_ms):
             await self.notifier.send(text, level)
 
 
-async def _guard_position(pos, snapshot, broker, db, notifier, settings, last_marks,
-                          now) -> list[GuardAction]:
-    lim = settings.limits
-    out: list[GuardAction] = []
+def _leg_marks(pos, snapshot, last_marks) -> tuple[dict[int, float], list[str], list[str], list[str]]:
+    """Цены открытых ног: из снимка, иначе последняя известная.
 
-    def act(kind: ActionKind, detail: str) -> None:
-        out.append(GuardAction(pos.id, kind, detail))
-
-    # 1. цены ног: снимок, иначе последняя известная
+    Возвращает (id(leg) -> цена, устаревшие, без цены, perp без маржи).
+    """
     marks: dict[int, float] = {}  # id(leg) -> цена
     stale: list[str] = []
     missing: list[str] = []
@@ -140,6 +147,46 @@ async def _guard_position(pos, snapshot, broker, db, notifier, settings, last_ma
             marks[id(leg)] = mark
         if leg.kind == "perp" and leg.amount > 0 and leg.margin <= 0:
             no_margin.append(name)
+    return marks, stale, missing, no_margin
+
+
+def _buffers(pos, marks) -> list[tuple[Leg, float, float]]:
+    return [(l, marks[id(l)], leg_buffer(l, marks[id(l)]))
+            for l in _perp_legs(pos) if id(l) in marks]
+
+
+async def _topup(pos, leg, mark, buf, broker, db, notifier) -> float | None:
+    """Довнести маржу до запаса 50%. Возвращает сумму или None, если не удалось."""
+    usd = _topup_amount(leg, mark)
+    try:
+        ok = await broker.add_margin(leg.exchange, leg.symbol, usd)
+    except Exception as exc:  # noqa: BLE001 — ошибка брокера = доливка не удалась
+        db.audit("margin_topup_error", {"position_id": pos.id, "exchange": leg.exchange,
+                                        "error": repr(exc)})
+        ok = False
+    if not ok:
+        return None
+    leg.margin += usd
+    db.update_position(pos)
+    db.audit("margin_topup", {"position_id": pos.id, "exchange": leg.exchange,
+                              "symbol": leg.symbol, "usd": usd, "buffer": buf,
+                              "margin": leg.margin})
+    await notifier.send(
+        f"Связка {pos.base}: запас до ликвидации {buf:.0%} на {leg.exchange}, "
+        f"довнесена маржа {usd:.2f} USD.", "warning")
+    return usd
+
+
+async def _guard_position(pos, snapshot, broker, db, notifier, settings, last_marks,
+                          now) -> list[GuardAction]:
+    lim = settings.limits
+    out: list[GuardAction] = []
+
+    def act(kind: ActionKind, detail: str) -> None:
+        out.append(GuardAction(pos.id, kind, detail))
+
+    # 1. цены ног: снимок, иначе последняя известная
+    marks, stale, missing, no_margin = _leg_marks(pos, snapshot, last_marks)
     problems = []
     if missing:
         problems.append("нет цены: " + ", ".join(missing))
@@ -153,8 +200,7 @@ async def _guard_position(pos, snapshot, broker, db, notifier, settings, last_ma
             await notifier.send(f"Связка {pos.base}: " + "; ".join(problems) + ".", "warning")
 
     def buffers() -> list[tuple[Leg, float, float]]:
-        return [(l, marks[id(l)], leg_buffer(l, marks[id(l)]))
-                for l in _perp_legs(pos) if id(l) in marks]
+        return _buffers(pos, marks)
 
     # 2. цена уже за ликвидацией
     gone = [(l, m) for l, m, b in buffers() if b <= 0]
@@ -167,27 +213,14 @@ async def _guard_position(pos, snapshot, broker, db, notifier, settings, last_ma
     for leg, mark, buf in buffers():
         if buf > lim.act_buffer:
             continue
-        usd = _topup_amount(leg, mark)
-        try:
-            ok = await broker.add_margin(leg.exchange, leg.symbol, usd)
-        except Exception as exc:  # noqa: BLE001 — ошибка брокера = доливка не удалась
-            db.audit("margin_topup_error", {"position_id": pos.id, "exchange": leg.exchange,
-                                            "error": repr(exc)})
-            ok = False
-        if not ok:
+        usd = await _topup(pos, leg, mark, buf, broker, db, notifier)
+        if usd is None:
+            want = _topup_amount(leg, mark)
             db.audit("guard_close", {"position_id": pos.id, "reason": "угроза ликвидации",
-                                     "buffer": buf, "topup_failed": usd})
+                                     "buffer": buf, "topup_failed": want})
             await close_pair(pos, "угроза ликвидации", broker, db, notifier, settings)
-            act("close", f"угроза ликвидации: запас {buf:.0%}, довнести {usd:.2f} USD не удалось")
+            act("close", f"угроза ликвидации: запас {buf:.0%}, довнести {want:.2f} USD не удалось")
             return out
-        leg.margin += usd
-        db.update_position(pos)
-        db.audit("margin_topup", {"position_id": pos.id, "exchange": leg.exchange,
-                                  "symbol": leg.symbol, "usd": usd, "buffer": buf,
-                                  "margin": leg.margin})
-        await notifier.send(
-            f"Связка {pos.base}: запас до ликвидации {buf:.0%} на {leg.exchange}, "
-            f"довнесена маржа {usd:.2f} USD.", "warning")
         act("topup", f"довнесено {usd:.2f} USD на {leg.exchange}, запас был {buf:.0%}")
 
     # 4. запас ≤ warn_buffer: предупреждение (уведомление не чаще раза в час)
@@ -239,7 +272,40 @@ async def _guard_position(pos, snapshot, broker, db, notifier, settings, last_ma
     return out or [GuardAction(pos.id, "ok", "всё в порядке")]
 
 
-async def _liquidated(pos, gone, broker, db, notifier, settings) -> None:
+async def _guard_closing(pos, snapshot, broker, db, notifier, settings, last_marks,
+                         now) -> list[GuardAction]:
+    """Недозакрытая связка: защитить оставшиеся perp-ноги и повторить закрытие."""
+    out: list[GuardAction] = []
+    # тревоги повторных закрытий и предупреждения о доливке — не чаще раза в час
+    quiet = _ThrottledNotifier(notifier, db, f"guard:closing:{pos.id}", now, levels={"alert"})
+    quiet_topup = _ThrottledNotifier(notifier, db, f"guard:closing_topup:{pos.id}", now)
+    marks, *_ = _leg_marks(pos, snapshot, last_marks)
+
+    gone = [(l, m) for l, m, b in _buffers(pos, marks) if b <= 0]
+    if gone:
+        await _liquidated(pos, gone, broker, db, notifier, settings, close_notifier=quiet)
+        out.append(GuardAction(pos.id, "liquidated", "ликвидация при закрытии: " + ", ".join(
+            f"{l.symbol} на {l.exchange}" for l, _ in gone)))
+        return out
+
+    for leg, mark, buf in _buffers(pos, marks):
+        if buf > settings.limits.act_buffer:
+            continue
+        usd = await _topup(pos, leg, mark, buf, broker, db, quiet_topup)
+        if usd is not None:
+            out.append(GuardAction(pos.id, "topup",
+                                   f"довнесено {usd:.2f} USD на {leg.exchange}, запас был {buf:.0%}"))
+
+    reason = pos.close_reason or "закрытие не завершено"
+    await close_pair(pos, reason, broker, db, quiet, settings)
+    out.append(GuardAction(pos.id, "close", f"повтор закрытия ({reason}): статус «{pos.status}»"))
+    return out
+
+
+_HANDLERS = {"open": _guard_position, "closing": _guard_closing}
+
+
+async def _liquidated(pos, gone, broker, db, notifier, settings, close_notifier=None) -> None:
     """Цена перепрыгнула ликвидацию: нога потеряна, остальное закрываем, бот на паузу.
 
     Если остальные ноги закрыть не удалось, позиция остаётся «закрывается» с причиной
@@ -256,7 +322,12 @@ async def _liquidated(pos, gone, broker, db, notifier, settings) -> None:
         leg.open = False
     pos.realized_pnl -= lost  # до close_pair: его итог в уведомлении и журнале уже с потерей
     db.update_position(pos)
-    await close_pair(pos, R_LIQUIDATED, broker, db, notifier, settings)  # итог: liquidated
+    was_closing = pos.status == "closing"
+    # у недозакрываемой связки причина закрытия сохраняется (close_pair её не затирает)
+    await close_pair(pos, R_LIQUIDATED, broker, db, close_notifier or notifier, settings)
+    if was_closing and pos.status == "closed":
+        pos.status = "liquidated"
+        db.update_position(pos)
     db.set_kv("paused", True)
     await notifier.send(
         f"Связка {pos.base}: позиция ликвидирована, потеря маржи {lost:.2f} USD. "

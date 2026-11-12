@@ -161,7 +161,9 @@ class PaperBroker:
             if reducing:
                 pnl = (avg - held["entry"]) * filled if held_amt > 0 else (held["entry"] - avg) * filled
                 released = held["margin"] * filled / abs(held_amt)
-                free += released + pnl - fee
+                # изолированная маржа: убыток по ноге не больше её маржи (симуляция
+                # ликвидации) — баланс не получает отрицательной суммы
+                free += max(released + pnl - fee, 0.0)
                 self._reduce(ex_hold, symbol, held, filled, released)
             else:
                 lev = float(self._leverages().get(exchange, {}).get(symbol, 1.0))

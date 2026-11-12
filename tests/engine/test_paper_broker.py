@@ -181,3 +181,20 @@ def test_ref_price_best_ask_bid_and_empty(settings, db):
     assert run(b.ref_price("bybit", SYM, "buy")) == 100.0
     assert run(b.ref_price("bybit", SYM, "sell")) == 99.0
     assert run(b.ref_price("okx", SYM, "buy")) == 0.0
+
+
+def test_perp_reduce_loss_clamped_at_released_margin(settings, db):
+    # шорт 2 по 99 с плечом 2: маржа 99; закрытие по 200 — убыток 202 больше маржи
+    books = {("bybit", SYM): BOOK}
+    b = make(settings, db, books)
+    run(b.set_leverage("bybit", SYM, 2.0))
+    run(b.market_ioc("bybit", SYM, "perp", "sell", 2.0, 0.001))
+    before = run(b.free_balance("bybit"))
+    books[("bybit", SYM)] = {"bids": [[199.0, 10.0]], "asks": [[200.0, 10.0]]}
+    # половина: освобождается 49.5 маржи, убыток 101 — баланс не уменьшается
+    f = run(b.market_ioc("bybit", SYM, "perp", "buy", 1.0, 0.001))
+    assert f.filled == 1.0
+    assert run(b.free_balance("bybit")) == pytest.approx(before)
+    f = run(b.market_ioc("bybit", SYM, "perp", "buy", 1.0, 0.001))
+    assert run(b.free_balance("bybit")) == pytest.approx(before)
+    assert run(b.open_amounts("bybit")) == {}
