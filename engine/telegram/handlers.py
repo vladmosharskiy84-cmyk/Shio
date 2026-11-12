@@ -1,7 +1,8 @@
 """Обработчики команд и кнопок Telegram.
 
 Чистые функции: только пишут строки в таблицу commands (исполняет их Runner)
-и возвращают текст ответа. Отвечают исключительно владельцу.
+и возвращают текст ответа. Отвечают исключительно владельцу и только в личном чате:
+и chat_id, и id отправителя должны совпадать с telegram.chat_id.
 """
 from __future__ import annotations
 
@@ -33,15 +34,17 @@ class Reply:
     buttons: list[list[Button]] | None = None
 
 
-def _is_owner(chat_id: int, db, settings, now_ms: int) -> bool:
+def _is_owner(chat_id: int, user_id: int | None, db, settings, now_ms: int) -> bool:
+    """Владелец в личном чате: chat_id == id отправителя == telegram.chat_id."""
     owner = settings.telegram.chat_id
-    if owner is not None and int(chat_id) == owner:
+    if owner is not None and user_id is not None and int(chat_id) == owner \
+            and int(user_id) == owner:
         return True
-    key = f"tg_foreign:{chat_id}"
+    key = f"tg_foreign:{chat_id}:{user_id}"
     last = db.get_kv(key)
     if last is None or now_ms - last >= HOUR_MS:
         db.set_kv(key, now_ms)
-        db.audit("telegram_foreign", {"chat_id": chat_id})
+        db.audit("telegram_foreign", {"chat_id": chat_id, "user_id": user_id})
     return False
 
 
@@ -59,8 +62,9 @@ def _dedup(db, key: str, now_ms: int) -> bool:
     return False
 
 
-def handle_message(text: str, chat_id: int, db, settings, now_ms: int) -> Reply | None:
-    if not _is_owner(chat_id, db, settings, now_ms):
+def handle_message(text: str, chat_id: int, user_id: int | None, db, settings,
+                   now_ms: int) -> Reply | None:
+    if not _is_owner(chat_id, user_id, db, settings, now_ms):
         return None
     parts = (text or "").strip().split(maxsplit=1)
     cmd = parts[0].split("@")[0].lower() if parts else ""
@@ -96,8 +100,9 @@ def _ask_close(arg: str, db) -> Reply:
                  [[Button("Да, закрыть", f"close:confirm:{pid}"), CANCEL]])
 
 
-def handle_callback(data: str, chat_id: int, db, settings, now_ms: int) -> Reply | None:
-    if not _is_owner(chat_id, db, settings, now_ms):
+def handle_callback(data: str, chat_id: int, user_id: int | None, db, settings,
+                    now_ms: int) -> Reply | None:
+    if not _is_owner(chat_id, user_id, db, settings, now_ms):
         return None
     data = data or ""
     if data == "cancel":

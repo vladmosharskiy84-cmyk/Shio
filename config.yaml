@@ -96,8 +96,8 @@ engine:
 # ====== Telegram-бот (токен — только в переменной окружения SHIO_TELEGRAM_TOKEN) ======
 telegram:
   enabled: false          # true — слать уведомления и принимать команды в Telegram
-  # chat_id: ваш числовой id чата. Как получить: напишите боту @userinfobot (или любому боту
-  # «get my id») и скопируйте число; для группы id отрицательный. Нужен, если enabled: true.
+  # chat_id: ваш числовой id в Telegram. Как получить: python -m engine telegram-id и напишите
+  # своему боту в личном чате. Бот отвечает только вам и только в личном чате. Нужен, если enabled: true.
   daily_summary_hour_utc: 18   # час (UTC) ежедневной сводки, 0–23
   dedupe_s: 600           # одинаковые тревоги в Telegram — не чаще раза в N секунд (≥ 60)
 

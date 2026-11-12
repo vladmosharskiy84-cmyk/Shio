@@ -5,6 +5,7 @@ import asyncio
 import logging
 import os
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -72,17 +73,17 @@ def build_notifier(settings, db) -> tuple[Notifier, str | None]:
 
 
 # --- маршрутизация (чистые функции, тестируются без aiogram и сети) ---
-async def route_message(api: TelegramApi, text: str, chat_id: int, db, settings,
-                        now_ms: int) -> None:
-    reply = handle_message(text, chat_id, db, settings, now_ms)
+async def route_message(api: TelegramApi, text: str, chat_id: int, user_id: int | None, db,
+                        settings, now_ms: int) -> None:
+    reply = handle_message(text, chat_id, user_id, db, settings, now_ms)
     if reply is not None:
         await api.send_message(chat_id, reply.text, reply.buttons)
 
 
 async def route_callback(api: TelegramApi, callback_id: str, data: str, chat_id: int,
-                         message_id: int | None, message_text: str | None, db, settings,
-                         now_ms: int) -> None:
-    reply = handle_callback(data, chat_id, db, settings, now_ms)
+                         user_id: int | None, message_id: int | None, message_text: str | None,
+                         db, settings, now_ms: int) -> None:
+    reply = handle_callback(data, chat_id, user_id, db, settings, now_ms)
     # Колбэк закрываем всегда, чтобы у кнопки не крутились «часики»; чужому — без текста.
     # Старый запрос Telegram отклоняет («query is too old») — это не повод терять ответ.
     try:
@@ -132,25 +133,67 @@ def chat_id_from_update(update: Any) -> int | None:
     return None
 
 
+@dataclass
+class Sender:
+    """Кто написал боту (для python -m engine telegram-id)."""
+    chat_id: int
+    user_id: int | None
+    name: str | None
+    username: str | None
+    chat_type: str | None
+
+
+def _event_part(update: Any, name: str) -> Any:
+    """Поле name у события или у вложенного Message/CallbackQuery из Update."""
+    found = _get(update, name)
+    if found is not None:
+        return found
+    for key in _UPDATE_KEYS:
+        inner = _get(update, key)
+        if inner is not None:
+            found = _event_part(inner, name)
+            if found is not None:
+                return found
+    return None
+
+
+def sender_from_update(update: Any) -> Sender | None:
+    chat_id = chat_id_from_update(update)
+    if chat_id is None:
+        return None
+    user = _event_part(update, "from_user")
+    names = [n for n in (_get(user, "first_name"), _get(user, "last_name")) if n]
+    chat = _event_part(update, "chat")
+    return Sender(chat_id, _get(user, "id"), " ".join(names) or None, _get(user, "username"),
+                  _get(chat, "type"))
+
+
 # --- запуск ---
 def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
-def _build_dispatcher(api: AiogramApi, settings, db) -> Dispatcher:
+def _sender_id(event) -> int | None:
+    user = getattr(event, "from_user", None)
+    return getattr(user, "id", None)
+
+
+def _build_dispatcher(api: TelegramApi, settings, db) -> Dispatcher:
     dp = Dispatcher()
 
     @dp.message()
     async def _on_message(message) -> None:
         if message.text is None:
             return
-        await route_message(api, message.text, message.chat.id, db, settings, _now_ms())
+        await route_message(api, message.text, message.chat.id, _sender_id(message), db,
+                            settings, _now_ms())
 
     @dp.callback_query()
     async def _on_callback(query) -> None:
         msg = query.message
-        chat_id = msg.chat.id if msg is not None else query.from_user.id
-        await route_callback(api, query.id, query.data or "", chat_id,
+        user_id = _sender_id(query)
+        chat_id = msg.chat.id if msg is not None else user_id
+        await route_callback(api, query.id, query.data or "", chat_id, user_id,
                              getattr(msg, "message_id", None), getattr(msg, "text", None),
                              db, settings, _now_ms())
 
@@ -188,14 +231,14 @@ async def run_telegram(token: str, settings, db, notifier: TelegramNotifier,
     await _poll_until(bot, dp, stop)
 
 
-def _build_discovery_dispatcher(found: list[int], stop: asyncio.Event) -> Dispatcher:
-    """Диспетчер, который только запоминает chat_id первого написавшего и ничего не отвечает."""
+def _build_discovery_dispatcher(found: list[Sender], stop: asyncio.Event) -> Dispatcher:
+    """Диспетчер, который только запоминает первого написавшего и ничего не отвечает."""
     dp = Dispatcher()
 
     async def _remember(event) -> None:
-        chat_id = chat_id_from_update(event)
-        if chat_id is not None and not found:
-            found.append(chat_id)
+        sender = sender_from_update(event)
+        if sender is not None and not found:
+            found.append(sender)
             stop.set()
 
     dp.message.register(_remember)
@@ -203,11 +246,11 @@ def _build_discovery_dispatcher(found: list[int], stop: asyncio.Event) -> Dispat
     return dp
 
 
-async def discover_chat_id(token: str, timeout_s: float = 120.0) -> int | None:
-    """chat_id первого, кто напишет боту. В Telegram ничего не отвечает."""
+async def discover_chat_id(token: str, timeout_s: float = 120.0) -> Sender | None:
+    """Первый, кто напишет боту (chat_id, имя, username). В Telegram ничего не отвечает."""
     bot = Bot(token)
     stop = asyncio.Event()
-    found: list[int] = []
+    found: list[Sender] = []
     dp = _build_discovery_dispatcher(found, stop)
 
     async def _timeout() -> None:

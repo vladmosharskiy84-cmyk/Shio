@@ -227,21 +227,29 @@ def _cmd_telegram_id(settings: Settings, args) -> int:
         print("Не задана переменная окружения SHIO_TELEGRAM_TOKEN "
               "(токен бота от @BotFather): export SHIO_TELEGRAM_TOKEN=...")
         return 2
-    from engine.telegram.bot import discover_chat_id
+    from engine.telegram import bot as tgbot
 
-    print("Напишите любое сообщение вашему боту в Telegram. Жду до 2 минут...")
+    print("Напишите любое сообщение вашему боту в Telegram (в личном чате). Жду до 2 минут...")
     try:
-        chat_id = asyncio.run(discover_chat_id(token, timeout_s=120))
+        sender = asyncio.run(tgbot.discover_chat_id(token, timeout_s=120))
     except KeyboardInterrupt:
         print("Остановлено.")
         return 1
     except Exception as exc:  # noqa: BLE001
         print(f"Не удалось связаться с Telegram: {exc}")
         return 1
-    if chat_id is None:
+    if sender is None:
         print("За 2 минуты никто не написал боту. Попробуйте ещё раз.")
         return 1
-    print(f"Ваш chat_id: {chat_id}")
+    who = ", ".join(x for x in (sender.name, f"@{sender.username}" if sender.username else None)
+                    if x) or "имя не указано"
+    if sender.chat_type not in (None, "private") or sender.chat_id != sender.user_id:
+        print(f"Сообщение пришло не из личного чата (chat_id {sender.chat_id}, от: {who}). "
+              "Бот отвечает только владельцу в личном чате: откройте чат с ботом, "
+              "напишите ему и повторите команду.")
+        return 1
+    print(f"Ваш chat_id: {sender.chat_id} (от: {who}). Проверьте, что это вы, и впишите "
+          "число в telegram.chat_id в config.yaml.")
     return 0
 
 

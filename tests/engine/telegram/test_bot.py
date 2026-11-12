@@ -72,21 +72,21 @@ def test_build_notifier_bad_token_falls_back(db, monkeypatch, caplog):
 def test_route_message_replies_to_owner_and_ignores_foreign(db):
     api = FakeTelegramApi()
     s = make_settings()
-    asyncio.run(tgbot.route_message(api, "/help", OWNER, db, s, NOW))
+    asyncio.run(tgbot.route_message(api, "/help", OWNER, OWNER, db, s, NOW))
     assert len(api.messages) == 1 and api.messages[0]["chat_id"] == OWNER
-    asyncio.run(tgbot.route_message(api, "/help", 999, db, s, NOW))
+    asyncio.run(tgbot.route_message(api, "/help", 999, 999, db, s, NOW))
     assert len(api.messages) == 1  # чужому не отвечаем
 
 
 def test_route_message_passes_buttons(db):
     api = FakeTelegramApi()
-    asyncio.run(tgbot.route_message(api, "/stop", OWNER, db, make_settings(), NOW))
+    asyncio.run(tgbot.route_message(api, "/stop", OWNER, OWNER, db, make_settings(), NOW))
     assert api.messages[0]["buttons"]  # кнопки подтверждения доходят до API
 
 
 def test_route_callback_answers_and_removes_buttons(db):
     api = FakeTelegramApi()
-    asyncio.run(tgbot.route_callback(api, "cb1", "cancel", OWNER, 7, "Закрыть позицию 1?",
+    asyncio.run(tgbot.route_callback(api, "cb1", "cancel", OWNER, OWNER, 7, "Закрыть позицию 1?",
                                      db, make_settings(), NOW))
     assert [a[0] for a in api.answers] == ["cb1"]
     assert len(api.edits) == 1 and api.edits[0]["message_id"] == 7
@@ -101,13 +101,13 @@ def test_route_callback_edit_failure_sends_new_message(db):
             raise ConnectionError("нет сети")
 
     api = EditFails()
-    asyncio.run(tgbot.route_callback(api, "cb1", "cancel", OWNER, 7, "x", db, make_settings(), NOW))
+    asyncio.run(tgbot.route_callback(api, "cb1", "cancel", OWNER, OWNER, 7, "x", db, make_settings(), NOW))
     assert len(api.messages) == 1 and "Отменено." in api.messages[0]["text"]
 
 
 def test_route_callback_foreign_is_silent(db):
     api = FakeTelegramApi()
-    asyncio.run(tgbot.route_callback(api, "cb1", "stop:confirm", 999, 7, "x", db,
+    asyncio.run(tgbot.route_callback(api, "cb1", "stop:confirm", 999, 999, 7, "x", db,
                                      make_settings(), NOW))
     assert api.edits == [] and api.messages == []
     assert all(text == "" for _, text in api.answers)
@@ -188,7 +188,7 @@ def test_route_callback_survives_answer_failure(db):
             raise RuntimeError("query is too old")
 
     api = AnswerFails()
-    asyncio.run(tgbot.route_callback(api, "cb1", "cancel", OWNER, 7, "x", db, make_settings(), NOW))
+    asyncio.run(tgbot.route_callback(api, "cb1", "cancel", OWNER, OWNER, 7, "x", db, make_settings(), NOW))
     assert len(api.edits) == 1 and "Отменено." in api.edits[0]["text"]
 
 
@@ -208,8 +208,74 @@ def test_discovery_dispatcher_captures_chat_id_from_real_update():
     now = datetime.now(tz=timezone.utc)
     msg = Message(message_id=1, date=now, chat=Chat(id=77, type="private"), text="hi")
     found, stopped = asyncio.run(go(Update(update_id=1, message=msg)))
-    assert found == [77] and stopped
-    cb = CallbackQuery(id="c", from_user=User(id=88, is_bot=False, first_name="x"),
-                       chat_instance="i", data="d", message=msg)
+    assert [f.chat_id for f in found] == [77] and stopped
+    assert found[0].name is None and found[0].username is None
+    user = User(id=88, is_bot=False, first_name="Иван", last_name="Петров", username="ivan")
+    cb = CallbackQuery(id="c", from_user=user, chat_instance="i", data="d", message=msg)
     found, _ = asyncio.run(go(Update(update_id=2, callback_query=cb)))
-    assert found == [77]
+    assert found == [tgbot.Sender(77, 88, "Иван Петров", "ivan", "private")]
+
+
+def test_route_ignores_non_owner_sender_in_owner_chat(db):
+    api = FakeTelegramApi()
+    asyncio.run(tgbot.route_message(api, "/pause", OWNER, 999, db, make_settings(), NOW))
+    asyncio.run(tgbot.route_callback(api, "cb1", "stop:confirm", OWNER, 999, 7, "x", db,
+                                     make_settings(), NOW))
+    assert api.messages == [] and api.edits == []
+    assert all(text == "" for _, text in api.answers)
+    assert db.conn.execute("SELECT COUNT(*) FROM commands").fetchone()[0] == 0
+
+
+def test_dispatcher_passes_sender_id(db, monkeypatch):
+    from datetime import datetime, timezone
+
+    from aiogram import Bot
+    from aiogram.types import CallbackQuery, Chat, Message, Update, User
+
+    seen = []
+
+    async def fake_route_message(api, text, chat_id, user_id, *a):
+        seen.append(("msg", chat_id, user_id))
+
+    async def fake_route_callback(api, cb_id, data, chat_id, user_id, *a):
+        seen.append(("cb", chat_id, user_id))
+
+    monkeypatch.setattr(tgbot, "route_message", fake_route_message)
+    monkeypatch.setattr(tgbot, "route_callback", fake_route_callback)
+    now = datetime.now(tz=timezone.utc)
+    user = User(id=5, is_bot=False, first_name="x")
+    msg = Message(message_id=1, date=now, chat=Chat(id=OWNER, type="private"), text="/help",
+                  from_user=user)
+    cb = CallbackQuery(id="c", from_user=user, chat_instance="i", data="cancel", message=msg)
+
+    async def go():
+        dp = tgbot._build_dispatcher(FakeTelegramApi(), make_settings(), db)
+        bot = Bot(TOKEN)
+        await dp.feed_update(bot, Update(update_id=1, message=msg))
+        await dp.feed_update(bot, Update(update_id=2, callback_query=cb))
+        await bot.session.close()
+
+    asyncio.run(go())
+    assert seen == [("msg", OWNER, 5), ("cb", OWNER, 5)]
+
+
+@pytest.mark.parametrize("sender,expect,group_warning", [
+    (tgbot.Sender(42, 42, "Иван Петров", "ivan", "private"),
+     ["Ваш chat_id: 42", "Иван Петров", "@ivan"], False),
+    (tgbot.Sender(-100500, 42, "Иван", None, "supergroup"), ["-100500", "Иван"], True),
+])
+def test_telegram_id_prints_sender(monkeypatch, capsys, tmp_path, sender, expect, group_warning):
+    from tests.engine.test_runner import make_cfg
+
+    async def fake_discover(token, timeout_s=120.0):
+        return sender
+
+    monkeypatch.setenv("SHIO_TELEGRAM_TOKEN", TOKEN)
+    monkeypatch.setattr(tgbot, "discover_chat_id", fake_discover)
+    from engine.__main__ import main
+    code = main(["--config", make_cfg(tmp_path), "telegram-id"])
+    out = capsys.readouterr().out
+    for piece in expect:
+        assert piece in out
+    assert ("не из личного чата" in out) == group_warning
+    assert code == (1 if group_warning else 0)
