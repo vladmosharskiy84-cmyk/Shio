@@ -192,6 +192,7 @@ async def _run(settings: Settings) -> None:
         collector = Collector(settings)
         stop = asyncio.Event()
         tg_task = None
+        notifier = None
         http = AiohttpJson()
         try:
             broker = PaperBroker(collector, settings, db)
@@ -213,6 +214,12 @@ async def _run(settings: Settings) -> None:
                 except (asyncio.TimeoutError, asyncio.CancelledError):
                     tg_task.cancel()
                     await asyncio.gather(tg_task, return_exceptions=True)
+                except Exception:  # noqa: BLE001
+                    logging.getLogger("engine").exception("Telegram: ошибка при остановке")
+            aclose = getattr(notifier, "aclose", None) if notifier is not None else None
+            if aclose is not None:  # дослать очередь (до 5 с) и закрыть сессию бота
+                try:
+                    await aclose()
                 except Exception:  # noqa: BLE001
                     logging.getLogger("engine").exception("Telegram: ошибка при остановке")
             await http.close()

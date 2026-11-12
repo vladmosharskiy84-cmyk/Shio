@@ -279,3 +279,59 @@ def test_telegram_id_prints_sender(monkeypatch, capsys, tmp_path, sender, expect
         assert piece in out
     assert ("не из личного чата" in out) == group_warning
     assert code == (1 if group_warning else 0)
+
+
+def test_bots_use_bounded_session_timeouts(db, monkeypatch):
+    monkeypatch.setenv("SHIO_TELEGRAM_TOKEN", TOKEN)
+    made = []
+    monkeypatch.setattr(tgbot, "AiogramApi", lambda bot: made.append(bot) or FakeTelegramApi())
+    tgbot.build_notifier(make_settings(), db)
+    assert made[0].session.timeout == tgbot.SESSION_TIMEOUT_S == 10
+    assert tgbot.make_bot(TOKEN).session.timeout == 10
+
+
+def test_aiogram_api_document_timeout_and_close():
+    calls = {}
+
+    class FakeSession:
+        closed = False
+
+        async def close(self):
+            FakeSession.closed = True
+
+    class FakeBot:
+        session = FakeSession()
+
+        async def send_document(self, chat_id, document, caption=None, request_timeout=None):
+            calls["request_timeout"] = request_timeout
+
+    api = tgbot.AiogramApi(FakeBot())
+    asyncio.run(api.send_document(OWNER, "b.bin", b"x", "копия"))
+    assert calls["request_timeout"] == tgbot.DOCUMENT_TIMEOUT_S == 120
+    asyncio.run(api.close())
+    assert FakeSession.closed
+
+
+def test_run_closes_notifier_on_shutdown(tmp_path, monkeypatch):
+    from tests.engine.test_runner import make_cfg
+    settings = load_settings(make_cfg(tmp_path))
+    closed = []
+
+    class FakeRunner:
+        def __init__(self, *a, **k):
+            pass
+
+        async def run_forever(self):
+            await asyncio.sleep(0.01)
+
+        def stop(self):
+            pass
+
+    class ClosingNotifier(LogNotifier):
+        async def aclose(self, timeout=5.0):
+            closed.append(timeout)
+
+    monkeypatch.setattr("engine.runner.Runner", FakeRunner)
+    monkeypatch.setattr(tgbot, "build_notifier", lambda s, db: (ClosingNotifier(db), None))
+    asyncio.run(_run(settings))
+    assert closed

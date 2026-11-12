@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from aiogram import Bot, Dispatcher
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboardMarkup
 
 from engine.notifier import LogNotifier, Notifier
@@ -21,6 +22,13 @@ log = logging.getLogger(__name__)
 
 TOKEN_ENV = "SHIO_TELEGRAM_TOKEN"
 CALLBACK_TOAST = "Принято"
+SESSION_TIMEOUT_S = 10      # предел на обычный запрос к Telegram
+DOCUMENT_TIMEOUT_S = 120    # отправка файла копии может идти дольше
+
+
+def make_bot(token: str) -> Bot:
+    """Bot с ограниченным временем запросов: зависший Telegram не держит задачу дольше 10 с."""
+    return Bot(token, session=AiohttpSession(timeout=SESSION_TIMEOUT_S))
 
 
 class AiogramApi:
@@ -48,7 +56,10 @@ class AiogramApi:
 
     async def send_document(self, chat_id: int, filename: str, data: bytes, caption: str) -> None:
         await self.bot.send_document(chat_id, BufferedInputFile(data, filename=filename),
-                                     caption=caption)
+                                     caption=caption, request_timeout=DOCUMENT_TIMEOUT_S)
+
+    async def close(self) -> None:
+        await self.bot.session.close()
 
 
 def build_notifier(settings, db) -> tuple[Notifier, str | None]:
@@ -64,7 +75,7 @@ def build_notifier(settings, db) -> tuple[Notifier, str | None]:
                     "Двигатель работает с уведомлениями в журнал.", TOKEN_ENV)
         return LogNotifier(db, backups), None
     try:
-        api = AiogramApi(Bot(token))
+        api = AiogramApi(make_bot(token))
     except Exception as exc:  # noqa: BLE001 — например, TokenValidationError
         log.warning("Telegram не настроен: токен в %s не подошёл (%s). "
                     "Двигатель работает с уведомлениями в журнал.", TOKEN_ENV, exc)
@@ -226,7 +237,7 @@ async def _poll_until(bot: Bot, dp: Dispatcher, stop: asyncio.Event) -> None:
 async def run_telegram(token: str, settings, db, notifier: TelegramNotifier,
                        stop: asyncio.Event) -> None:
     """Принимает команды и нажатия кнопок владельца до сигнала stop."""
-    bot = Bot(token)
+    bot = make_bot(token)
     dp = _build_dispatcher(AiogramApi(bot), settings, db)
     await _poll_until(bot, dp, stop)
 
@@ -248,7 +259,7 @@ def _build_discovery_dispatcher(found: list[Sender], stop: asyncio.Event) -> Dis
 
 async def discover_chat_id(token: str, timeout_s: float = 120.0) -> Sender | None:
     """Первый, кто напишет боту (chat_id, имя, username). В Telegram ничего не отвечает."""
-    bot = Bot(token)
+    bot = make_bot(token)
     stop = asyncio.Event()
     found: list[Sender] = []
     dp = _build_discovery_dispatcher(found, stop)
