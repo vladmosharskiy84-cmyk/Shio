@@ -27,9 +27,10 @@ def decide(candidates: list[Candidate], open_positions: list[Position], pending:
            equity: float, day_pnl: float, paused: bool, settings: Settings) -> list[Decision]:
     lim = settings.limits
     held = [p for p in open_positions if p.status in _OPEN_STATUSES]
-    bases = {p.base for p in held} | {p.base for p in pending if p.status in _ACTIVE_PROPOSALS}
-    slots = lim.max_positions - len(held)
-    aggressive = sum(p.capital for p in held if p.profile == "aggressive")
+    active = [p for p in pending if p.status in _ACTIVE_PROPOSALS]
+    bases = {p.base for p in held} | {p.base for p in active}
+    slots = lim.max_positions - len(held) - len(active)
+    aggressive = sum(p.capital for p in [*held, *active] if p.profile == "aggressive")
     day_loss_hit = day_pnl <= -lim.daily_loss_pause * equity
 
     out: list[Decision] = []

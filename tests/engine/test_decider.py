@@ -111,3 +111,29 @@ def test_one_decision_per_candidate_in_order():
     cands = [cand("A"), cand("B", liquidity_ok=False), cand("C")]
     d = run(cands)
     assert [x.candidate for x in d] == cands
+
+
+def test_pending_proposal_consumes_slot():
+    pend = [prop("P1"), prop("P2", status="approved"), prop("P3")]
+    d = run([cand("A"), cand("B")], pending=pend)
+    assert [x.action for x in d] == ["skip", "skip"]
+    d = run([cand("A"), cand("B")], pending=pend[:2])
+    assert [x.action for x in d] == ["propose", "skip"]
+
+
+def test_pending_aggressive_proposal_counts_toward_share():
+    p = prop("P1")
+    p.profile = "aggressive"
+    p.capital = 150.0
+    assert run([cand(profile="aggressive")], pending=[p])[0].action == "skip"
+    assert run([cand(profile="calm")], pending=[p])[0].action == "propose"
+
+
+def test_daily_loss_boundary_pauses():
+    assert run([cand()], day_pnl=-25.0)[0].action == "skip"
+
+
+def test_aggressive_sum_at_cap_allowed():
+    d = run([cand(profile="aggressive", capital=50.0)],
+            open_positions=[pos("ETH", "aggressive", capital=100.0)])
+    assert d[0].action == "propose"
