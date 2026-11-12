@@ -174,3 +174,10 @@ def test_perp_partial_reduce_releases_margin_proportionally(settings, db):
 
 def test_round_amount_delegates(settings, db):
     assert run(make(settings, db).round_amount("bybit", SYM, 1.23456)) == 1.23
+
+
+def test_ref_price_best_ask_bid_and_empty(settings, db):
+    b = make(settings, db)
+    assert run(b.ref_price("bybit", SYM, "buy")) == 100.0
+    assert run(b.ref_price("bybit", SYM, "sell")) == 99.0
+    assert run(b.ref_price("okx", SYM, "buy")) == 0.0

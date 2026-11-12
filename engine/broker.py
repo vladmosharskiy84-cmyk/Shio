@@ -20,6 +20,8 @@ class Fill:
 
 
 class Broker(Protocol):
+    async def ref_price(self, exchange: str, symbol: str, side: Literal["buy", "sell"]) -> float: ...
+
     async def round_amount(self, exchange: str, symbol: str, amount: float) -> float: ...
 
     async def market_ioc(self, exchange: str, symbol: str, kind: str, side: str,
@@ -63,6 +65,11 @@ class PaperBroker:
     # --- Broker ---
     async def round_amount(self, exchange: str, symbol: str, amount: float) -> float:
         return await self.collector.round_amount(exchange, symbol, amount)
+
+    async def ref_price(self, exchange: str, symbol: str, side: Literal["buy", "sell"]) -> float:
+        book = await self.collector.order_book(exchange, symbol)
+        levels = book.get("asks" if side == "buy" else "bids") or []
+        return float(levels[0][0]) if levels else 0.0
 
     async def set_leverage(self, exchange: str, symbol: str, leverage: float) -> None:
         lev = self._leverages()

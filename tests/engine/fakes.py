@@ -1,6 +1,7 @@
 """Общие тестовые заглушки движка."""
 from __future__ import annotations
 
+from engine.broker import Fill
 from scanner.exchanges import ExchangeClient
 
 
@@ -79,3 +80,79 @@ class FakeClientFactory:
         client.ex = self.overrides.get(name, self.exchange_cls)(name)
         self.clients[name] = client
         return client
+
+
+class FakeNotifier:
+    """Запоминает уведомления как кортежи (текст, уровень)."""
+
+    def __init__(self):
+        self.sent: list[tuple[str, str]] = []
+
+    async def send(self, text: str, level: str = "info") -> None:
+        self.sent.append((text, level))
+
+    def texts(self) -> str:
+        return "\n".join(t for t, _ in self.sent)
+
+
+class ScriptedBroker:
+    """Брокер с заранее заданными результатами market_ioc (по порядку вызовов).
+
+    script: элементы — доля исполнения (float) либо готовый Fill; после исчерпания — 1.0.
+    hook: вызывается перед самым первым market_ioc.
+    """
+
+    def __init__(self, script=None, prices: dict | None = None, default_price: float = 100.0,
+                 fee_rate: float = 0.001, hook=None):
+        self.script = list(script or [])
+        self.prices = prices or {}
+        self.default_price = default_price
+        self.fee_rate = fee_rate
+        self.hook = hook
+        self.calls: list[tuple] = []  # (exchange, symbol, kind, side, amount)
+        self.leverages: dict = {}
+        self.amounts: dict[str, dict[str, float]] = {}
+
+    def _price(self, exchange, symbol):
+        return self.prices.get((exchange, symbol), self.default_price)
+
+    async def ref_price(self, exchange, symbol, side):
+        return self._price(exchange, symbol)
+
+    async def round_amount(self, exchange, symbol, amount):
+        return round(amount, 3)
+
+    async def set_leverage(self, exchange, symbol, leverage):
+        self.leverages[(exchange, symbol)] = leverage
+
+    async def market_ioc(self, exchange, symbol, kind, side, amount, max_slippage):
+        if self.hook is not None and not self.calls:
+            self.hook()
+        self.calls.append((exchange, symbol, kind, side, amount))
+        item = self.script.pop(0) if self.script else 1.0
+        if isinstance(item, Fill):
+            fill = item
+        else:
+            price = self._price(exchange, symbol)
+            filled = amount * item
+            fill = Fill(exchange, symbol, side, amount, filled, price if filled else 0.0,
+                        filled * price * self.fee_rate)
+        sign = 1.0 if side == "buy" else -1.0
+        ex = self.amounts.setdefault(exchange, {})
+        ex[symbol] = ex.get(symbol, 0.0) + sign * fill.filled
+        return fill
+
+    async def free_balance(self, exchange):
+        return 1e9
+
+    async def add_margin(self, exchange, symbol, usd):
+        return True
+
+    async def open_amounts(self, exchange):
+        return {s: a for s, a in self.amounts.get(exchange, {}).items() if abs(a) > 1e-9}
+
+    async def credit_funding(self, exchange, usd):
+        pass
+
+    async def on_liquidated(self, exchange, symbol):
+        return 0.0
