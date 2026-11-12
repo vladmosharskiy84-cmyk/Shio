@@ -1,0 +1,64 @@
+# Shio — этап 1: решения и отложенные улучшения
+
+Журнал решений, принятых при разработке этапа 1 (двигатель + виртуальный режим), и список мелких улучшений, отложенных на следующие этапы.
+
+## Решения (Ruling)
+
+- Ruling R1: find_candidates(snapshot, collector, settings, capital_for: Callable[[str], float]) — capital_for(kind) returns USD capital for one pair (= capital_for_pair(equity, settings)); finder builds the scanner cfg dict from Settings (capital_usd=capital_for(kind), perp_leverage=limits.max_leverage, hold_days, volume filters, max_price_diff_pct) — why: keeps scanner reuse — cost if wrong: signature tweak later.
+- Ruling R2: move FakeExchange into tests/engine/fakes.py and make tests/test_engine.py import it from there; old scanner tests must stay green — why: one fake — cost: none.
+- Ruling R3: Broker protocol gains `async credit_funding(exchange: str, usd: float) -> None` and `async on_liquidated(exchange: str, symbol: str) -> float` (returns lost margin); both no-ops on a real exchange later; PaperBroker implements them in Task 6; Runner calls credit_funding for each accrued payment (Task 11); Guardian calls on_liquidated (Task 9) — why: paper balances must reflect funding and liquidations — cost if wrong: small protocol change at stage 5.
+- Ruling R4: ledger.day_pnl(db, now_ms, equity_now) -> float = equity_now − kv["day_start_equity"] for the current UTC day; the first call in a new UTC day stores equity_now as the day start and returns 0.0 — why: avoids double counting funding inside realized_pnl — cost if wrong: daily stop slightly different from intent.
+- Ruling R5: ccxt mexc has no fetchFundingRates — Task 4 Collector must skip exchanges lacking it with one warning (mexc stays watch-only, yields no data for now) — why: scanner already tolerates the failure; per-symbol fallback is costly — cost if wrong: no MEXC signals in stage 1.
+- Ruling R6: Db (sqlite3, check_same_thread=True) is used only from the asyncio loop thread in the Runner — no asyncio.to_thread; CLI and API open their own Db instances in their own processes — carry to Task 11 dispatch — cost if wrong: ProgrammingError at runtime, easy fix.
+- Ruling R7: Task 4 depth check runs only for the top `history_check_top` candidates by apr_net_capital; the rest get liquidity_ok=False — why: limits order-book API calls per minute — cost if wrong: a lower-ranked but liquid pair is ignored that minute.
+- Ruling R8: FakeNotifier is added with ScriptedBroker in Task 7 (Task 4 did not need it) — why: interface lives in Task 7/11 — cost: none.
+- Ruling R9: active proposals (pending/approved) count toward max_positions slots and toward the aggressive_share sum (Proposal.profile/capital), overriding the brief's literal «уже открыто» — why: spec caps simultaneous pairs at 3 and aggressive at 30%; without this repeated cycles over-propose — cost if wrong: fewer proposals shown at once. Task 11 must also re-run limits at approve time.
+- Ruling R10: PaperBroker.market_ioc is an IOC limit order: limit = best*(1+max_slippage) for buys, best*(1-max_slippage) for sells; it consumes book levels by AMOUNT (base units) within the limit; estimate_fill stays the finder's USD-notional tool — why: executor works in amounts; IOC-limit is how the real broker will behave — cost if wrong: minor fill-model difference.
+- Ruling R11: Executor opens legs in legs_plan order (finder emits spot-before-perp and short-before-long) instead of "less liquid first" — why: Broker exposes no depth metric; spot is usually the thinner leg — cost if wrong: slightly higher chance of unwinding a leg.
+- Ruling R12: Broker protocol gains `async ref_price(exchange, symbol, side: Literal["buy","sell"]) -> float` (best ask for buy / best bid for sell; 0.0 if empty); PaperBroker implements via collector.order_book — added in Task 7 — why: executor needs a price to size amounts — cost: none.
+- Ruling R13: shrink-incomplete (first leg can't be reduced to match second) keeps status "open" with an alert and audit; guardian's drift>1% rule rebalances later — why: both legs are open and mostly hedged, guardian protects "open" — cost if wrong: small residual mismatch < 1% persists.
+- Ruling R14: incomplete unwind (second leg failed and first leg not fully closed) keeps status "closing" (not "failed") so reconciler/close retries repair it; switch to "failed" only when first leg fully closed — why: reviewer Critical #1, nothing guards "failed" — cost: none.
+- Ruling R15 (Task 9): liquidation uses effective leverage = (entry*amount)/leg.margin so top-ups count; top-up target buffer 50%: target liq = entry + (mark−entry)*2 i.e. liq_t = 2*mark − entry, needed lev from liquidation_price inverse, needed margin = entry*amount/lev_needed, top-up = needed − current margin.
+- Ruling R16 (Task 9): drift measured on leg AMOUNTS |a1−a2|/max > max_drift; fix by reducing the larger leg via a new public executor helper `reduce_leg(position, leg, amount, broker, db, notifier, settings) -> float` (refactor of the shrink path, books price PnL + fee).
+- Ruling R17 (Task 9): liquidation handling — broker.on_liquidated for the leg, leg amount=0/open=False, close_pair on the rest, then status "liquidated", realized_pnl −= lost margin, kv["paused"]=True, alert.
+- Ruling R18: liquidation with an incomplete close of the other leg keeps status "closing" (loss booked, paused, alert) and becomes "liquidated" only after the rest is closed — amends R17 — why: "closing" stays visible to reconciler/close retries; an unconditional "liquidated" would hide an open leg — cost: none.
+- Ruling R19: "no price at all" also sends a throttled (once/hour) warning — approved deviation — why: user must know a position is blind — cost: none.
+- Ruling R20 (Task 10): reconciler handles "opening" AND "closing": closing with broker amounts left → close_pair again; closing with nothing left at broker → status "closed" (or "liquidated"/"failed" kept if close_reason says so), legs closed. Incomplete "opening" → close_pair on what exists, then status "failed", close_reason «незавершённое открытие».
+- Ruling R21 (Task 11): approve re-checks limits via a new `check_limits(...) -> str | None` in engine/decider.py that decide() also uses (no duplicated logic); the approving proposal itself is excluded from active proposals.
+- Ruling R22 (Task 11): reconcile at start and every 600 s (spec "раз в 10 минут"); `run` refuses virtual=false with a Russian message (real broker = stage 5).
+- Ruling R23: Runner caps each candidate's capital by what its exchanges can afford before decide(): spot-perp → min(c.capital, free(ex) × 0.98); perp-perp → min(c.capital, 2 × min(free(short_ex), free(long_ex)) × 0.98 / ... per-leg margin rule: capital/2 per exchange); candidates with capped capital < 20 USD are dropped with an audit reason «недостаточно свободного баланса»; the same cap is re-applied at approve — why: default balances 170/170/160 made every spot-perp fail on the first leg with a misleading liquidity message — cost if wrong: smaller positions than the 50% limit.
+- Ruling R24: approve refused by limits keeps the proposal pending (it expires after 15 min) — accepted.
+- Ruling R25: guardian owns "closing" positions every tick (liquidation check + top-up on remaining perp legs, retry close_pair with throttled alerts); runner reconciles immediately after any exception escaping open_pair; PaperBroker clamps a reduce loss to the leg margin — amends R14/R18/R20 — why: final review Critical 1 — cost: none.
+- Ruling R26: Hyperliquid stays a trade exchange; real perp/spot symbols carried from PerpInfo/SpotInfo through Opportunity.extra into legs_plan; USDC quote/settle accepted for hyperliquid; hyperliquid spot_taker 0.0007 — why: owner chose it as a trade exchange — cost if wrong: a later revert.
+- Ruling R27: daily loss at −daily_loss_pause × day-start equity sets kv["paused"]=True with audit + alert (manual resume), per spec §7/§12, overriding plan Task 5 "skip only".
+- Ruling R28: funding pending_rate refreshed every tick while next_funding_ts is unchanged (spec §5 "фактическим ставкам в момент выплаты"), overriding plan Task 8.
+- Final: parked — (a) closing+liquidated leg may end "closed" if rest closes later — Ruling: status label only; money/pause/alert correct; fix with liquidated_leg marker in stage 2 — cost: wrong label in history.
+- Final: parked — (b) close retry without broker sync could open a new perp in paper if DB/broker diverge — Ruling: window tiny (sequential ticks, reconcile first, per-fill persist), would surface as unknown holding → pause; add reduce_only to Broker before stage 5 — cost: rare phantom position in paper.
+- Final: parked — (c) realized_pnl not clamped like PaperBroker — Ruling: conservative direction, equity/limits use broker balances; clamp in _reduce_fill before evaluating paper statistics — cost: overstated loss on gap-through-liquidation positions.
+- Final: parked — same-day resume after daily-loss pause is re-paused within a minute — Ruling: consistent with R27; document; add day override later.
+- Final: parked — stuck closing writes audit row every 30 s; closing positions without price get no stale warning; unknown-holding and guard_error alerts unthrottled; equity no floor for past-liquidation perp — Ruling: stage 2 (with Telegram) — cost: log noise.
+
+## Отложенные мелкие улучшения
+
+- Task 1: minor (deferred): non-mapping limits/exchanges/ec raise AttributeError not ConfigError (config.py:227,267)
+- Task 1: minor (deferred): no tests for act_buffer>=warn_buffer and trade-without-enabled rules
+- Task 1: minor (deferred): db_path not validated
+- Task 1: minor (deferred): int-typed limits (max_positions etc.) silently truncate fractional input
+- Task 1: minor (deferred): requirements pytest-asyncio>=0.23 vs ini option from 0.24 — consider >=0.24
+- Task 2: minor (deferred): take_new_commands not atomic across processes (SELECT then UPDATE) — single consumer OK; consider UPDATE...RETURNING
+- Task 2: minor (deferred): save_position rollback leaves stale ids on objects; update_position with None id silently no-op; foreign_keys pragma off
+- Task 2: minor (deferred): no test for update_position inserting new leg / get_position KeyError
+- Task 4: minor (deferred): find_opportunities called twice computing both kinds; round_amount load_markets without lock; FakeClientFactory uses __new__; no tests for slippage-exceeded-with-depth or thin bids side
+- Task 5: minor (deferred): no boundary tests (day_pnl == -25 exactly, aggressive == cap); skip closure redefined per loop
+- Task 6: minor (deferred): add_margin accepts usd<=0; residual margin sliver lost on pop; Literal side type-ignores; two set_kv non-atomic; unknown exchange KeyError; missing tests (perp insufficient balance, perp averaging, long perp close)
+- Task 7: minor (deferred): rounds-to-zero dust leg ends untracked without audit; sizing/leverage exception paths untested; db.update_position in _fill_up outside try
+- Task 8: minor (deferred): funding_rate None with next_ts → pending None; only one payment per call (downtime loses intermediate payments — runner must call each tick); equity db param unused (mandated)
+- Task 9: minor (deferred): persistent guard_error alerts every cycle (unthrottled)
+- Task 10: minor (deferred): repaired entry price is current market price (estimate); orphan test relies on implicit ScriptedBroker default price; possible spurious warn within _EPS
+- Task 11: minor (deferred): guard latency behind collect tick (sequential ticks) — consider separate task later
+- Task 11: minor (deferred): decide() limit checks use pre-reserve capital (conservative)
+- Final: parked — (a) closing+liquidated leg may end "closed" if rest closes later — Ruling: status label only; money/pause/alert correct; fix with liquidated_leg marker in stage 2 — cost: wrong label in history.
+- Final: parked — (b) close retry without broker sync could open a new perp in paper if DB/broker diverge — Ruling: window tiny (sequential ticks, reconcile first, per-fill persist), would surface as unknown holding → pause; add reduce_only to Broker before stage 5 — cost: rare phantom position in paper.
+- Final: parked — (c) realized_pnl not clamped like PaperBroker — Ruling: conservative direction, equity/limits use broker balances; clamp in _reduce_fill before evaluating paper statistics — cost: overstated loss on gap-through-liquidation positions.
+- Final: parked — same-day resume after daily-loss pause is re-paused within a minute — Ruling: consistent with R27; document; add day override later.
+- Final: parked — stuck closing writes audit row every 30 s; closing positions without price get no stale warning; unknown-holding and guard_error alerts unthrottled; equity no floor for past-liquidation perp — Ruling: stage 2 (with Telegram) — cost: log noise.
