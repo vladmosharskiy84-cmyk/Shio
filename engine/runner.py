@@ -383,12 +383,19 @@ class Runner:
     async def _stop_all(self, arg, now: int) -> str:
         self.db.set_kv("paused", True)  # сразу: даже если закрытие упадёт, новых связок не будет
         results = []
-        for pos in self.db.positions({"open", "closing"}):
+        left = 0
+        positions = self.db.positions({"open", "closing"})
+        for pos in positions:
             pos = await close_pair(pos, "стоп всё", self.broker, self.db, self.notifier,
                                    self.settings)
             results.append(f"#{pos.id} {pos.base}: {pos.status}")
-        await self.notifier.send("Стоп всё: позиции закрыты, бот на паузе.", "alert")
-        return "; ".join(results + ["бот на паузе"])
+            left += pos.status == "closing"
+        summary = f"закрыто {len(positions) - left} из {len(positions)}"
+        if left:
+            summary += (f", ещё закрывается {left} (Guardian повторяет закрытие каждые "
+                        f"{self.settings.guard_interval_s} с)")
+        await self.notifier.send(f"Стоп всё: {summary}. Бот на паузе.", "alert")
+        return "; ".join(results + [summary, "бот на паузе"])
 
     async def _pause(self, arg, now: int) -> str:
         self.db.set_kv("paused", True)

@@ -88,7 +88,7 @@ def test_unknown_exchange_position_reported_not_touched(db, settings):
     issues = run(reconcile(broker, db, notifier, settings))
     assert len(issues) == 1 and "неизвестная позиция" in issues[0]
     assert audits(db, "reconcile_unknown")
-    assert ("warn" in [lvl for _, lvl in notifier.sent])
+    assert ("alert" in [lvl for _, lvl in notifier.sent])
     assert broker.calls == []
 
 
@@ -241,3 +241,12 @@ def test_closing_incomplete_open_nothing_left_ends_failed(db, settings):
     empty = mkpos(db, "closing", reason="незавершённое открытие")
     run(reconcile(ScriptedBroker(), db, FakeNotifier(), settings))
     assert db.get_position(empty.id).status == "failed"
+
+
+def test_unknown_holding_pauses_entries_with_alert(db, settings):
+    broker, notifier = ScriptedBroker(), FakeNotifier()
+    broker.amounts["bybit"] = {"ZZZ/USDT": 5.0}
+    run(reconcile(broker, db, notifier, settings))
+    assert db.get_kv("paused") is True
+    assert any(lvl == "alert" and "неизвестная позиция" in t and "пауз" in t
+               for t, lvl in notifier.sent)

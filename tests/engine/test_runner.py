@@ -694,3 +694,26 @@ def test_daily_loss_pauses_until_resume(cfg_path):
         run(env.collector.close())
     assert env.db.get_kv("paused") is False
     assert [p.base for p in env.db.pending_proposals(now_ms(env))] == ["HOT"]
+
+
+def test_stop_all_reports_real_outcome(cfg_path, monkeypatch):
+    data = {"bybit": {"HOT": (0.001, "8h", 100.0), "ALT": (0.0012, "8h", 50.0)}}
+    env = Env(cfg_path, data=data, mode="auto")
+    env.settings.limits.max_pair_share = 0.3
+
+    async def half_close(pos, reason, broker, db, notifier, settings):
+        pos.status = "closed" if pos.base == "HOT" else "closing"
+        db.update_position(pos)
+        return pos
+
+    try:
+        run(env.runner.tick_collect())
+        monkeypatch.setattr("engine.runner.close_pair", half_close)
+        cid = env.db.add_command("stop_all")
+        run(env.runner.tick_commands())
+    finally:
+        run(env.collector.close())
+    text, level = env.notifier.sent[-1]
+    assert level == "alert"
+    assert "закрыто 1 из 2" in text and "ещё закрывается 1" in text
+    assert "закрыто 1 из 2" in env.command(cid)["result"]

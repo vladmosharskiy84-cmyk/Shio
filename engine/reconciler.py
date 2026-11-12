@@ -97,7 +97,9 @@ async def reconcile(broker, db, notifier, settings) -> list[str]:
                 text = f"неизвестная позиция {symbol} на {ex}: объём {amount:g}"
                 issues.append(text)
                 db.audit("reconcile_unknown", {"exchange": ex, "symbol": symbol, "amount": amount})
-                await notifier.send(text, "warn")
+                db.set_kv("paused", True)  # расхождение с биржей: новые входы на паузу
+                await notifier.send(f"{text}. Новые связки на паузе до проверки (resume).",
+                                    "alert")
 
     for pos in positions:
         skipped = {l.exchange for l in pos.legs if l.exchange not in held}
