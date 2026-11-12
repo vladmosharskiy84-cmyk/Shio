@@ -94,6 +94,35 @@ def _cmd_stop(settings, args) -> int:
     return _send(settings, "stop_all", None, "закрыть все связки и поставить на паузу")
 
 
+def _cmd_restore(settings: Settings, args) -> int:
+    from engine import backup
+
+    with _open_db(settings) as db:
+        heartbeat = db.get_kv("heartbeat")
+    if heartbeat is not None and _now_ms() - heartbeat <= _ALIVE_MS:
+        print("Бот сейчас запущен. Остановите его (Ctrl+C в окне с python -m engine run), "
+              "подождите 3 минуты и повторите: восстановление при работающем боте испортит базу.")
+        return 1
+    try:
+        key = backup.load_key()
+        if key is None:
+            print("Не задан ключ: export SHIO_BACKUP_KEY=<ключ в base64, тот же, что при создании копий>")
+            return 2
+        try:
+            blob = Path(args.file).read_bytes()
+        except OSError as exc:
+            print(f"Не удалось прочитать файл {args.file}: {exc}")
+            return 1
+        old = backup.restore(blob, key, settings.db_path)
+    except backup.BackupError as exc:
+        print(f"Восстановление не выполнено: {exc}")
+        return 1
+    print(f"База восстановлена из {args.file}.")
+    if old:
+        print(f"Прежняя база сохранена: {old}")
+    return 0
+
+
 # --- run ---
 def _setup_logging(settings: Settings) -> None:
     log_path = Path(settings.db_path).parent / "shio.log"
@@ -223,6 +252,9 @@ def _parser() -> argparse.ArgumentParser:
     sub.add_parser("pause", help="не открывать новые связки").set_defaults(fn=_cmd_pause)
     sub.add_parser("telegram-id", help="узнать свой chat_id для Telegram (ждёт сообщение боту 2 минуты)"
                    ).set_defaults(fn=_cmd_telegram_id)
+    sp = sub.add_parser("restore", help="восстановить базу из зашифрованной копии (бот должен быть остановлен)")
+    sp.add_argument("file", help="файл копии shio-ГГГГ-ММ-ДД.db.enc")
+    sp.set_defaults(fn=_cmd_restore)
     sub.add_parser("resume", help="снять паузу").set_defaults(fn=_cmd_resume)
     return p
 

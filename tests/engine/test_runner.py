@@ -744,3 +744,100 @@ def test_runner_reports_command_result(cfg_path):
     assert ("Команда «pause»: бот на паузе", "info") in env.notifier.sent
     texts = [(t, lvl) for t, lvl in env.notifier.sent if t.startswith("Команда «approve»")]
     assert texts == [("Команда «approve»: предложение #999 не найдено", "warn")]
+
+
+# --- ежедневная сводка и резервные копии ---
+DAY0 = 1_800_000_000.0 - (1_800_000_000 % 86400)  # полночь UTC дня T0
+
+
+def at(env, hour, minute=0, day=0):
+    env.clock.t = DAY0 + day * 86400 + hour * 3600 + minute * 60
+
+
+def test_daily_summary_once_per_day(cfg_path, monkeypatch):
+    monkeypatch.delenv("SHIO_BACKUP_KEY", raising=False)
+    env = Env(cfg_path)
+    env.settings.backup.enabled = False
+    hour = env.settings.telegram.daily_summary_hour_utc
+    try:
+        at(env, hour - 1, 59)
+        run(env.runner.tick_daily())
+        assert env.notifier.sent == []
+        at(env, hour)
+        run(env.runner.tick_daily())
+        at(env, hour, 1)
+        run(env.runner.tick_daily())
+        summaries = [t for t, _ in env.notifier.sent if "Сводка" in t]
+        assert len(summaries) == 1
+        for word in ("Капитал", "P&L", "Funding", "Открытых связок", "Ожидают"):
+            assert word in summaries[0]
+        at(env, hour, day=1)
+        run(env.runner.tick_daily())
+        assert len([t for t, _ in env.notifier.sent if "Сводка" in t]) == 2
+    finally:
+        run(env.collector.close())
+
+
+def test_daily_summary_late_start_sends_same_day(cfg_path, monkeypatch):
+    monkeypatch.delenv("SHIO_BACKUP_KEY", raising=False)
+    env = Env(cfg_path)
+    env.settings.backup.enabled = False
+    try:
+        at(env, env.settings.telegram.daily_summary_hour_utc + 2)
+        run(env.runner.tick_daily())
+        assert len([t for t, _ in env.notifier.sent if "Сводка" in t]) == 1
+    finally:
+        run(env.collector.close())
+
+
+def test_backup_sent_once_per_day_with_key(cfg_path, monkeypatch):
+    from engine import backup
+    key = bytes(range(32))
+    monkeypatch.setenv("SHIO_BACKUP_KEY", __import__("base64").b64encode(key).decode())
+    env = Env(cfg_path)
+    hour = env.settings.backup.hour_utc
+    try:
+        at(env, hour)
+        run(env.runner.tick_daily())
+        run(env.runner.tick_daily())
+        assert len(env.notifier.documents) == 1
+        name, data, caption = env.notifier.documents[0]
+        assert name.startswith("shio-") and name.endswith(".db.enc")
+        assert "Резервная копия" in caption
+        assert backup.decrypt(data, key).startswith(b"SQLite format 3")
+        at(env, hour, day=1)
+        run(env.runner.tick_daily())
+        assert len(env.notifier.documents) == 2
+    finally:
+        run(env.collector.close())
+
+
+def test_backup_skipped_without_key_warns_once(cfg_path, monkeypatch):
+    monkeypatch.delenv("SHIO_BACKUP_KEY", raising=False)
+    env = Env(cfg_path)
+    hour = env.settings.backup.hour_utc
+    try:
+        at(env, hour)
+        run(env.runner.tick_daily())
+        at(env, hour, 5)
+        run(env.runner.tick_daily())
+        assert env.notifier.documents == []
+        warns = [(t, l) for t, l in env.notifier.sent if "SHIO_BACKUP_KEY" in t]
+        assert len(warns) == 1 and warns[0][1] == "warn"
+        at(env, hour, day=1)
+        run(env.runner.tick_daily())
+        assert len([1 for t, _ in env.notifier.sent if "SHIO_BACKUP_KEY" in t]) == 2
+    finally:
+        run(env.collector.close())
+
+
+def test_backup_disabled_does_nothing(cfg_path, monkeypatch):
+    monkeypatch.delenv("SHIO_BACKUP_KEY", raising=False)
+    env = Env(cfg_path)
+    env.settings.backup.enabled = False
+    try:
+        at(env, env.settings.backup.hour_utc)
+        run(env.runner.tick_daily())
+        assert env.notifier.documents == [] and "SHIO_BACKUP_KEY" not in env.notifier.texts()
+    finally:
+        run(env.collector.close())

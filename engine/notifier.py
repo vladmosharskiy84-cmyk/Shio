@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Literal, Protocol
 
 from engine.db import Db
@@ -20,6 +21,8 @@ class Notifier(Protocol):
     async def send(self, text: str, level: Level = "info") -> None: ...
 
     async def proposal(self, p: Proposal, ttl_min: int, hold_days: float) -> None: ...
+
+    async def send_document(self, filename: str, data: bytes, caption: str) -> None: ...
 
 
 def format_proposal(p: Proposal, ttl_min: int, hold_days: float) -> str:
@@ -44,3 +47,11 @@ class LogNotifier:
     async def proposal(self, p: Proposal, ttl_min: int, hold_days: float) -> None:
         await self.send(f"{format_proposal(p, ttl_min, hold_days)} "
                         f"Подтвердить: python -m engine approve {p.id}", "info")
+
+    async def send_document(self, filename: str, data: bytes, caption: str) -> None:
+        """Без Telegram файл сохраняется в data/backups/, путь пишется в журнал."""
+        folder = Path("data") / "backups"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / Path(filename).name
+        path.write_bytes(data)
+        await self.send(f"{caption}. Файл сохранён: {path}", "info")

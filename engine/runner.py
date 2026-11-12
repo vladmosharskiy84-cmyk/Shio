@@ -4,8 +4,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from datetime import datetime, timezone
 
-from engine import ledger
+from engine import backup, ledger
 from engine.collector import MarketSnapshot
 from engine.decider import (MIN_PAIR_CAPITAL, NO_BALANCE_REASON, affordable_capital,
                             capital_for_pair, check_limits, daily_loss_hit, decide,
@@ -20,6 +21,7 @@ log = logging.getLogger(__name__)
 
 COMMANDS_INTERVAL_S = 2
 HEARTBEAT_INTERVAL_S = 60
+DAILY_INTERVAL_S = 60
 RECONCILE_INTERVAL_S = 600
 _LOG_SKIPS = 5  # сколько причин пропуска лучших кандидатов писать в журнал за тик
 
@@ -53,6 +55,7 @@ class Runner:
             ("commands", COMMANDS_INTERVAL_S, self.tick_commands),
             ("guard", settings.guard_interval_s, self.tick_guard),
             ("heartbeat", HEARTBEAT_INTERVAL_S, self.tick_heartbeat),
+            ("daily", DAILY_INTERVAL_S, self.tick_daily),
         ]
 
     # --- цикл ---
@@ -113,6 +116,61 @@ class Runner:
 
     async def tick_heartbeat(self) -> None:
         await self._guarded("heartbeat", self._heartbeat)
+
+    async def tick_daily(self) -> None:
+        # раздельно: сбой сводки не должен отменять копию, и наоборот
+        await self._guarded("daily_summary", self._daily_summary)
+        await self._guarded("daily_backup", self._daily_backup)
+
+    def _due_today(self, mark: str, hour_utc: int) -> str | None:
+        """Дата UTC (YYYY-MM-DD), если час уже наступил и за этот день отметки ещё нет."""
+        now = datetime.fromtimestamp(self.clock(), tz=timezone.utc)
+        today = now.strftime("%Y-%m-%d")
+        if now.hour < hour_utc or self.db.get_kv(mark) == today:
+            return None
+        return today
+
+    async def _daily_summary(self) -> None:
+        today = self._due_today("daily:summary", self.settings.telegram.daily_summary_hour_utc)
+        if today is None:
+            return
+        self.db.set_kv("daily:summary", today)  # сначала отметка: при сбое не спамим каждую минуту
+        now = self.now_ms()
+        eq, dpnl = await self._equity(now)
+        day_start = int(datetime.strptime(today, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                        .timestamp() * 1000)
+        funding = self.db.funding_total(day_start)
+        held = len(self.db.positions(_HELD))
+        pending = len(self.db.pending_proposals(now))
+        await self.notifier.send(
+            f"Сводка за {today} (UTC)\n"
+            f"Капитал: {eq:.2f} USD\n"
+            f"P&L за день: {dpnl:+.2f} USD\n"
+            f"Funding за день: {funding:+.2f} USD\n"
+            f"Открытых связок: {held}\n"
+            f"Ожидают решения предложений: {pending}")
+
+    async def _daily_backup(self) -> None:
+        cfg = self.settings.backup
+        if not cfg.enabled:
+            return
+        today = self._due_today("daily:backup", cfg.hour_utc)
+        if today is None:
+            return
+        self.db.set_kv("daily:backup", today)
+        try:
+            key = backup.load_key()
+        except backup.BackupError as exc:
+            await self.notifier.send(f"Резервная копия не сделана: {exc}", "warn")
+            return
+        if key is None:
+            await self.notifier.send(
+                "Резервная копия не сделана: не задан ключ шифрования SHIO_BACKUP_KEY "
+                "(см. раздел «Резервные копии» в README).", "warn")
+            return
+        data = backup.encrypt(backup.snapshot_bytes(self.db), key)
+        await self.notifier.send_document(f"shio-{today}.db.enc", data,
+                                          f"Резервная копия Shio за {today} (UTC)")
 
     async def _heartbeat(self) -> None:
         self.db.heartbeat(self.now_ms())
