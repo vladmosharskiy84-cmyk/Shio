@@ -157,6 +157,7 @@ async def _run(settings: Settings) -> None:
                     await asyncio.wait_for(tg_task, timeout=10)
                 except (asyncio.TimeoutError, asyncio.CancelledError):
                     tg_task.cancel()
+                    await asyncio.gather(tg_task, return_exceptions=True)
                 except Exception:  # noqa: BLE001
                     logging.getLogger("engine").exception("Telegram: ошибка при остановке")
             await collector.close()

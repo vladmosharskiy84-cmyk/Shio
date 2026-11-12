@@ -180,3 +180,36 @@ def test_telegram_task_failure_does_not_stop_runner(tmp_path, monkeypatch, caplo
     assert ran["runner"] and ran["tg"] >= 2
     assert any("telegram упал" in r.getMessage() or "Telegram" in r.getMessage()
                for r in caplog.records)
+
+
+def test_route_callback_survives_answer_failure(db):
+    class AnswerFails(FakeTelegramApi):
+        async def answer_callback(self, callback_id, text):
+            raise RuntimeError("query is too old")
+
+    api = AnswerFails()
+    asyncio.run(tgbot.route_callback(api, "cb1", "cancel", OWNER, 7, "x", db, make_settings(), NOW))
+    assert len(api.edits) == 1 and "Отменено." in api.edits[0]["text"]
+
+
+def test_discovery_dispatcher_captures_chat_id_from_real_update():
+    from datetime import datetime, timezone
+
+    from aiogram import Bot
+    from aiogram.types import CallbackQuery, Chat, Message, Update, User
+
+    async def go(update):
+        found: list[int] = []
+        stop = asyncio.Event()
+        dp = tgbot._build_discovery_dispatcher(found, stop)
+        await dp.feed_update(Bot(TOKEN), update)
+        return found, stop.is_set()
+
+    now = datetime.now(tz=timezone.utc)
+    msg = Message(message_id=1, date=now, chat=Chat(id=77, type="private"), text="hi")
+    found, stopped = asyncio.run(go(Update(update_id=1, message=msg)))
+    assert found == [77] and stopped
+    cb = CallbackQuery(id="c", from_user=User(id=88, is_bot=False, first_name="x"),
+                       chat_instance="i", data="d", message=msg)
+    found, _ = asyncio.run(go(Update(update_id=2, callback_query=cb)))
+    assert found == [77]

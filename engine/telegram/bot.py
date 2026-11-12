@@ -82,7 +82,11 @@ async def route_callback(api: TelegramApi, callback_id: str, data: str, chat_id:
                          now_ms: int) -> None:
     reply = handle_callback(data, chat_id, db, settings, now_ms)
     # Колбэк закрываем всегда, чтобы у кнопки не крутились «часики»; чужому — без текста.
-    await api.answer_callback(callback_id, CALLBACK_TOAST if reply is not None else "")
+    # Старый запрос Telegram отклоняет («query is too old») — это не повод терять ответ.
+    try:
+        await api.answer_callback(callback_id, CALLBACK_TOAST if reply is not None else "")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Не удалось ответить на нажатие кнопки: %r", exc)
     if reply is None:
         return
     if reply.buttons or message_id is None:
@@ -161,8 +165,11 @@ async def _poll_until(bot: Bot, dp: Dispatcher, stop: asyncio.Event) -> None:
         if polling.done():
             polling.result()  # если опрос упал — исключение уйдёт наверх, задачу перезапустят
             return
-        await dp.stop_polling()
-        await polling
+        try:
+            await dp.stop_polling()
+        except RuntimeError:  # опрос ещё не начался (Ctrl+C на старте)
+            polling.cancel()
+        await asyncio.gather(polling, return_exceptions=True)
     finally:
         for task in (polling, waiter):
             if not task.done():
@@ -174,32 +181,45 @@ async def _poll_until(bot: Bot, dp: Dispatcher, stop: asyncio.Event) -> None:
 async def run_telegram(token: str, settings, db, notifier: TelegramNotifier,
                        stop: asyncio.Event) -> None:
     """Принимает команды и нажатия кнопок владельца до сигнала stop."""
-    bot = getattr(notifier.api, "bot", None) or Bot(token)
+    bot = Bot(token)
     dp = _build_dispatcher(AiogramApi(bot), settings, db)
     await _poll_until(bot, dp, stop)
+
+
+def _build_discovery_dispatcher(found: list[int], stop: asyncio.Event) -> Dispatcher:
+    """Диспетчер, который только запоминает chat_id первого написавшего и ничего не отвечает."""
+    dp = Dispatcher()
+
+    async def _remember(event) -> None:
+        chat_id = chat_id_from_update(event)
+        if chat_id is not None and not found:
+            found.append(chat_id)
+            stop.set()
+
+    dp.message.register(_remember)
+    dp.callback_query.register(_remember)
+    return dp
 
 
 async def discover_chat_id(token: str, timeout_s: float = 120.0) -> int | None:
     """chat_id первого, кто напишет боту. В Telegram ничего не отвечает."""
     bot = Bot(token)
-    dp = Dispatcher()
     stop = asyncio.Event()
     found: list[int] = []
-
-    @dp.update()
-    async def _on_update(update) -> None:
-        chat_id = chat_id_from_update(update)
-        if chat_id is not None and not found:
-            found.append(chat_id)
-            stop.set()
+    dp = _build_discovery_dispatcher(found, stop)
 
     async def _timeout() -> None:
         await asyncio.sleep(timeout_s)
         stop.set()
 
-    timer = asyncio.ensure_future(_timeout())
+    timer = None
     try:
+        # старые сообщения (в том числе чужие) не в счёт
+        await bot.delete_webhook(drop_pending_updates=True)
+        timer = asyncio.ensure_future(_timeout())
         await _poll_until(bot, dp, stop)
     finally:
-        timer.cancel()
+        if timer is not None:
+            timer.cancel()
+        await bot.session.close()
     return found[0] if found else None
