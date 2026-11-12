@@ -963,3 +963,25 @@ def test_runner_launchpool_tick_respects_interval_and_disabled(cfg_path):
         assert len([t for t, _ in env.notifier.sent if "Новый пул" in t]) == 1
     finally:
         run(env.collector.close())
+
+
+def test_report_failure_does_not_skip_remaining_commands(cfg_path, caplog):
+    class ReportFails(FakeNotifier):
+        async def send(self, text, level="info", buttons=None):
+            if text.startswith("Команда «"):
+                raise ConnectionError("отчёт не ушёл")
+            await super().send(text, level)
+
+    env = Env(cfg_path)
+    env.runner.notifier = ReportFails()
+    try:
+        first = env.db.add_command("pause")
+        second = env.db.add_command("resume")
+        with caplog.at_level(logging.ERROR):
+            run(env.runner.tick_commands())
+    finally:
+        run(env.collector.close())
+    assert env.command(first)["status"] == "done"
+    assert env.command(second)["status"] == "done"
+    assert env.db.get_kv("paused") is False
+    assert any("отчёт" in r.getMessage() or "Команда" in r.getMessage() for r in caplog.records)

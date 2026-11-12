@@ -397,7 +397,11 @@ class Runner:
                 await self._report_command(cmd, result, "info")
 
     async def _report_command(self, cmd: Command, result: str, level: str) -> None:
-        await self.notifier.send(f"Команда «{cmd.type}»: {result}", level)
+        """Отчёт о команде; его сбой не мешает выполнить остальные команды."""
+        try:
+            await self.notifier.send(f"Команда «{cmd.type}»: {result}", level)
+        except Exception:  # noqa: BLE001
+            log.exception("Не удалось отправить отчёт о команде %s %s", cmd.type, cmd.arg or "")
 
     async def _execute(self, cmd: Command, now: int) -> str:
         handler = {"approve": self._approve, "reject": self._reject, "close": self._close,
