@@ -281,7 +281,8 @@ class Runner:
                       and (l.exchange, l.symbol) in self.last_marks]
             if values:
                 buffers[str(pos.id)] = min(values)
-        self._save_stats(buffers=buffers)
+        marks = {f"{ex}|{sym}": mark for (ex, sym), mark in self.last_marks.items()}
+        self._save_stats(buffers=buffers, marks=marks)
 
     # --- команды ---
     async def _commands(self) -> None:

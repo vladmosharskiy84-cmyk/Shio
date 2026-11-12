@@ -85,3 +85,38 @@ def test_rejects_leverage_above_ten_fractional(tmp_path):
     path = write(tmp_path, lambda c: c["engine"]["limits"].update(max_leverage=10.9))
     with pytest.raises(ConfigError):
         load_settings(path)
+
+
+def test_old_config_without_new_sections_loads(tmp_path):
+    def m(c):
+        for k in ("telegram", "backup", "launchpool"):
+            c.pop(k, None)
+    s = load_settings(write(tmp_path, m))
+    assert s.telegram.enabled is False and s.telegram.chat_id is None
+    assert s.backup.hour_utc == 3
+    assert s.launchpool.interval_s == 1800 and s.launchpool.exchanges == ["bybit", "okx"]
+
+
+def test_telegram_enabled_requires_chat_id(tmp_path):
+    with pytest.raises(ConfigError, match="chat_id"):
+        load_settings(write(tmp_path, lambda c: c.update(telegram={"enabled": True})))
+    s = load_settings(write(tmp_path, lambda c: c.update(telegram={"enabled": True, "chat_id": -1001234})))
+    assert s.telegram.chat_id == -1001234
+
+
+@pytest.mark.parametrize("section,key", [("telegram", "daily_summary_hour_utc"), ("backup", "hour_utc")])
+@pytest.mark.parametrize("hour", [-1, 24])
+def test_hour_out_of_range_rejected(tmp_path, section, key, hour):
+    with pytest.raises(ConfigError):
+        load_settings(write(tmp_path, lambda c: c.update({section: {key: hour}})))
+
+
+@pytest.mark.parametrize("section,key", [("telegram", "dedupe_s"), ("launchpool", "interval_s")])
+def test_interval_below_minute_rejected(tmp_path, section, key):
+    with pytest.raises(ConfigError):
+        load_settings(write(tmp_path, lambda c: c.update({section: {key: 59}})))
+
+
+def test_default_config_telegram_disabled():
+    s = load_settings(str(ROOT / "config.yaml"))
+    assert s.telegram.enabled is False and s.telegram.dedupe_s == 600

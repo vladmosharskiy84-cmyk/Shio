@@ -92,3 +92,22 @@ engine:
     proposal_ttl_s: 900      # срок действия предложения
     max_slippage: 0.001      # допустимое проскальзывание
     leg_retries: 3           # попыток открыть вторую ногу
+
+# ====== Telegram-бот (токен — только в переменной окружения SHIO_TELEGRAM_TOKEN) ======
+telegram:
+  enabled: false          # true — слать уведомления и принимать команды в Telegram
+  # chat_id: ваш числовой id чата. Как получить: напишите боту @userinfobot (или любому боту
+  # «get my id») и скопируйте число; для группы id отрицательный. Нужен, если enabled: true.
+  daily_summary_hour_utc: 18   # час (UTC) ежедневной сводки, 0–23
+  dedupe_s: 600           # одинаковые тревоги в Telegram — не чаще раза в N секунд (≥ 60)
+
+# ====== Резервные копии базы (ключ шифрования — в переменной окружения SHIO_BACKUP_KEY) ======
+backup:
+  enabled: true
+  hour_utc: 3             # час (UTC), когда присылать копию файлом, 0–23
+
+# ====== Оповещения о Launchpool ======
+launchpool:
+  enabled: true
+  interval_s: 1800        # как часто проверять, не менее 60 секунд
+  exchanges: [bybit, okx]

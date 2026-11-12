@@ -37,6 +37,27 @@ class ExchangeCfg:
 
 
 @dataclass
+class TelegramCfg:
+    enabled: bool = False
+    chat_id: int | None = None
+    daily_summary_hour_utc: int = 18
+    dedupe_s: int = 600
+
+
+@dataclass
+class BackupCfg:
+    enabled: bool = True
+    hour_utc: int = 3
+
+
+@dataclass
+class LaunchpoolCfg:
+    enabled: bool = True
+    interval_s: int = 1800
+    exchanges: list[str] = field(default_factory=lambda: ["bybit", "okx"])
+
+
+@dataclass
 class Settings:
     capital_usd: float
     mode: Literal["semi", "auto"]
@@ -55,6 +76,9 @@ class Settings:
     history_periods: int = 21
     history_check_top: int = 15
     min_net_apr: float = 0.0  # мин. доходность связки, % годовых: ниже — не предлагаем и не входим
+    telegram: TelegramCfg = field(default_factory=TelegramCfg)
+    backup: BackupCfg = field(default_factory=BackupCfg)
+    launchpool: LaunchpoolCfg = field(default_factory=LaunchpoolCfg)
 
 
 def _num(value, label: str) -> float:
@@ -124,6 +148,62 @@ def _load_exchanges(raw: dict) -> dict[str, ExchangeCfg]:
             raise ConfigError(f"Биржа {name}: торговать можно только на наблюдаемой бирже (enabled: true)")
         out[name] = ExchangeCfg(name, trade, watch, float(spot), float(perp))
     return out
+
+
+def _section(raw: dict, name: str, cls):
+    sec = raw.get(name)
+    if sec is None:
+        return {}
+    if not isinstance(sec, dict):
+        raise ConfigError(f"Секция {name} должна быть словарём")
+    unknown = set(sec) - {f.name for f in fields(cls)}
+    if unknown:
+        raise ConfigError(f"{name}: неизвестные параметры: {', '.join(sorted(unknown))}")
+    return sec
+
+
+def _hour(value, label: str) -> int:
+    v = _num(value, label)
+    if v != int(v) or not 0 <= v <= 23:
+        raise ConfigError(f"{label}: час (UTC) должен быть целым числом от 0 до 23, получено {value!r}")
+    return int(v)
+
+
+def _seconds(value, label: str) -> int:
+    v = _num(value, label)
+    if v < 60:
+        raise ConfigError(f"{label}: интервал должен быть не меньше 60 секунд, получено {value!r}")
+    return int(v)
+
+
+def _load_telegram(raw: dict) -> TelegramCfg:
+    sec = _section(raw, "telegram", TelegramCfg)
+    enabled = _bool(sec.get("enabled", False), "telegram.enabled")
+    chat_id = sec.get("chat_id")
+    if chat_id is not None and (isinstance(chat_id, bool) or not isinstance(chat_id, int)):
+        raise ConfigError(f"telegram.chat_id: ожидается целое число, получено {chat_id!r}")
+    if enabled and chat_id is None:
+        raise ConfigError("telegram.enabled: true требует telegram.chat_id (номер вашего чата в Telegram)")
+    return TelegramCfg(
+        enabled=enabled, chat_id=chat_id,
+        daily_summary_hour_utc=_hour(sec.get("daily_summary_hour_utc", 18), "telegram.daily_summary_hour_utc"),
+        dedupe_s=_seconds(sec.get("dedupe_s", 600), "telegram.dedupe_s"))
+
+
+def _load_backup(raw: dict) -> BackupCfg:
+    sec = _section(raw, "backup", BackupCfg)
+    return BackupCfg(enabled=_bool(sec.get("enabled", True), "backup.enabled"),
+                     hour_utc=_hour(sec.get("hour_utc", 3), "backup.hour_utc"))
+
+
+def _load_launchpool(raw: dict) -> LaunchpoolCfg:
+    sec = _section(raw, "launchpool", LaunchpoolCfg)
+    names = sec.get("exchanges", ["bybit", "okx"])
+    if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+        raise ConfigError("launchpool.exchanges: ожидается список названий бирж")
+    return LaunchpoolCfg(enabled=_bool(sec.get("enabled", True), "launchpool.enabled"),
+                         interval_s=_seconds(sec.get("interval_s", 1800), "launchpool.interval_s"),
+                         exchanges=list(names))
 
 
 def load_settings(path: str) -> Settings:
@@ -201,5 +281,8 @@ def load_settings(path: str) -> Settings:
         hold_days=float(_num(_require(raw, "hold_days", "hold_days"), "hold_days")),
         db_path=str(eng.get("db_path", "data/shio.db")),
         min_net_apr=float(min_net_apr),
+        telegram=_load_telegram(raw),
+        backup=_load_backup(raw),
+        launchpool=_load_launchpool(raw),
         **ints,
     )
