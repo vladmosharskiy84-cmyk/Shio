@@ -172,6 +172,23 @@ def test_restore_command_when_stopped(tmp_path, monkeypatch, capsys):
     db.conn.close()
 
 
+def test_restore_clears_heartbeat_from_backup(tmp_path, monkeypatch, capsys):
+    """В копии есть сигнал «жив» на момент копии; после восстановления это не «сбой»."""
+    cfg = make_cfg(tmp_path)
+    monkeypatch.setenv("SHIO_BACKUP_KEY", b64())
+    db = Db(str(tmp_path / "shio.db"))
+    db.init()
+    db.heartbeat(int(time.time() * 1000) - 10 * 60_000)
+    blob = backup.encrypt(backup.snapshot_bytes(db), KEY)
+    db.conn.close()
+    f = tmp_path / "b.enc"
+    f.write_bytes(blob)
+    assert main(["--config", cfg, "restore", str(f)]) == 0
+    db = Db(str(tmp_path / "shio.db"))
+    assert db.get_kv("heartbeat") is None
+    db.conn.close()
+
+
 def test_two_restores_in_same_second_keep_both_old_files(tmp_path):
     path = str(tmp_path / "shio.db")
     db = Db(path)

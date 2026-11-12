@@ -24,8 +24,24 @@ def _wait_for(pred, timeout=2.0):
     return pred()
 
 
-def test_limit_is_five_minutes():
-    assert STALL_LIMIT_S == 300
+def test_limit_is_ten_minutes():
+    assert STALL_LIMIT_S == 600
+
+
+def test_runner_feeds_after_each_job(tmp_path):
+    """Кормим после каждой задачи шага: долгий шаг из нескольких медленных задач не считается зависанием."""
+    from tests.engine.test_runner import Env, make_cfg
+
+    env = Env(make_cfg(tmp_path))
+    feeds = []
+
+    class FakeStall:
+        def feed(self):
+            feeds.append(1)
+
+    env.runner.stall = FakeStall()
+    asyncio.run(env.runner.step())
+    assert len(feeds) >= len(env.runner._jobs)
 
 
 def test_fires_after_limit(caplog):
@@ -34,7 +50,7 @@ def test_fires_after_limit(caplog):
     with caplog.at_level(logging.CRITICAL):
         wd.start()
         try:
-            clock.t += 299
+            clock.t += 599
             time.sleep(0.05)
             assert exits == []
             clock.t += 2
@@ -42,7 +58,7 @@ def test_fires_after_limit(caplog):
         finally:
             wd.stop()
     assert exits == [1]
-    assert any("Движок завис 301 с — перезапуск" in r.getMessage() for r in caplog.records)
+    assert any("Движок завис 601 с — перезапуск" in r.getMessage() for r in caplog.records)
 
 
 def test_does_not_fire_when_fed():
@@ -116,7 +132,7 @@ def test_runner_feeds_after_each_step(tmp_path):
         asyncio.run(asyncio.wait_for(env.runner.run_forever(), 5))
     finally:
         asyncio.run(env.collector.close())
-    assert len(feeds) == 3
+    assert len(feeds) >= 3  # после каждой задачи и после каждого шага
 
 
 def test_run_starts_and_stops_watchdog(tmp_path, monkeypatch):

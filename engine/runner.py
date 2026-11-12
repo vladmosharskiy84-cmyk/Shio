@@ -49,7 +49,7 @@ class Runner:
         self.notifier = notifier
         self.clock = clock
         self.pinger = pinger
-        self.stall = stall  # сторож зависания (engine.stall): кормим после каждого шага
+        self.stall = stall  # сторож зависания (engine.stall): кормим после каждой задачи шага
         self.announcement_sources = list(announcement_sources or [])
         self.snapshot: MarketSnapshot | None = None
         self.snapshot_at: int | None = None  # now_ms (по self.clock) последнего удачного сбора
@@ -77,6 +77,8 @@ class Runner:
             if now >= self._next_due.get(name, float("-inf")):
                 self._next_due[name] = now + interval
                 await tick()
+                if self.stall is not None:  # кормим после каждой задачи, а не только после шага
+                    self.stall.feed()
 
     async def run_forever(self) -> None:
         """Сверка при старте (первый шаг), затем задачи по расписанию до stop()."""

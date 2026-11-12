@@ -128,6 +128,14 @@ def _cmd_restore(settings: Settings, args) -> int:
     except backup.BackupError as exc:
         print(f"Восстановление не выполнено: {exc}")
         return 1
+    try:  # в копии лежит сигнал «жив» на момент копии; без этого старт показал бы ложный «сбой»
+        restored = Db(settings.db_path)
+        try:
+            restored.delete_kv("heartbeat")
+        finally:
+            restored.conn.close()
+    except sqlite3.Error:
+        pass
     print(f"База восстановлена из {args.file}.")
     if old:
         print(f"Прежняя база сохранена: {old}")
