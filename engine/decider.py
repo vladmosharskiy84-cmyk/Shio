@@ -19,8 +19,26 @@ class Decision:
     reason: str
 
 
+MIN_PAIR_CAPITAL = 20.0      # меньше — связку не открываем
+BALANCE_RESERVE = 0.98       # 2% свободного баланса оставляем на комиссии и округления
+NO_BALANCE_REASON = "недостаточно свободного баланса"
+
+
 def capital_for_pair(equity: float, settings: Settings) -> float:
     return equity * settings.limits.max_pair_share
+
+
+def affordable_capital(kind: str, legs_plan: list[dict], capital: float,
+                       balances: dict[str, float]) -> float:
+    """Капитал связки, урезанный до того, что позволяют свободные балансы её бирж.
+
+    spot-perp на бирже X: весь капитал на X → не больше free(X)×0.98.
+    perp-perp: на каждой бирже нужна половина капитала → не больше 2×min(free)×0.98.
+    """
+    exchanges = sorted({leg["exchange"] for leg in legs_plan})
+    free = min((balances.get(ex, 0.0) for ex in exchanges), default=0.0)
+    limit = free * BALANCE_RESERVE * (2 if kind == "perp-perp" else 1)
+    return max(0.0, min(capital, limit))
 
 
 def check_limits(base: str, profile: str, capital: float, open_positions: list[Position],

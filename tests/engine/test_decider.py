@@ -1,3 +1,5 @@
+import pytest
+
 from engine.config import load_settings
 from engine.decider import capital_for_pair, decide
 from engine.finder import Candidate
@@ -149,3 +151,25 @@ def test_check_limits_reasons():
     assert check_limits("A", "calm", 100.0, full, [prop("Z", status="expired")], EQUITY, 0.0,
                         False, s) is None
     assert "ETH" in check_limits("ETH", "calm", 100.0, [pos("ETH")], [], EQUITY, 0.0, False, s)
+
+
+SP = [{"exchange": "bybit", "kind": "spot"}, {"exchange": "bybit", "kind": "perp"}]
+PP = [{"exchange": "bybit", "kind": "perp"}, {"exchange": "okx", "kind": "perp"}]
+
+
+def test_affordable_capital_spot_perp():
+    from engine.decider import affordable_capital
+    assert affordable_capital("spot-perp", SP, 250.0, {"bybit": 170.0}) == pytest.approx(166.6)
+    assert affordable_capital("spot-perp", SP, 100.0, {"bybit": 170.0}) == 100.0
+
+
+def test_affordable_capital_perp_perp():
+    from engine.decider import affordable_capital
+    assert affordable_capital("perp-perp", PP, 250.0, {"bybit": 170.0, "okx": 160.0}) == 250.0
+    assert affordable_capital("perp-perp", PP, 250.0, {"bybit": 100.0, "okx": 90.0}) == pytest.approx(176.4)
+
+
+def test_affordable_capital_below_min_or_missing_balance():
+    from engine.decider import MIN_PAIR_CAPITAL, affordable_capital
+    assert affordable_capital("spot-perp", SP, 250.0, {"bybit": 15.0}) < MIN_PAIR_CAPITAL
+    assert affordable_capital("perp-perp", PP, 250.0, {"bybit": 170.0}) == 0.0

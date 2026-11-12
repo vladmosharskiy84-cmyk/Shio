@@ -47,21 +47,36 @@ class Clock:
         return self.t
 
 
-@pytest.fixture
-def cfg_path(tmp_path):
+def make_cfg(tmp_path, default_balances=False):
+    """default_balances: капитал 500 и балансы 170/170/160 из config.yaml.
+
+    Данные есть только у bybit (у okx и hyperliquid подделка отдаёт пустой снимок).
+    """
     with open("config.yaml", encoding="utf-8") as f:
         raw = yaml.safe_load(f)
-    raw["capital_usd"] = 10000
     for name, ex in raw["exchanges"].items():
-        ex["enabled"] = name == "bybit"
-        ex["trade"] = name == "bybit"
+        ex["enabled"] = name == "bybit" or (default_balances and ex.get("trade", False))
+        if not default_balances:
+            ex["trade"] = name == "bybit"
     eng = raw["engine"]
     eng["db_path"] = str(tmp_path / "shio.db")
-    eng["paper_balances"] = {"bybit": 10000}
     eng["aggressive_apr"] = 1000
+    if not default_balances:
+        raw["capital_usd"] = 10000
+        eng["paper_balances"] = {"bybit": 10000}
     path = tmp_path / "config.yaml"
     path.write_text(yaml.safe_dump(raw, allow_unicode=True), encoding="utf-8")
     return str(path)
+
+
+@pytest.fixture
+def cfg_path(tmp_path):
+    return make_cfg(tmp_path)
+
+
+@pytest.fixture
+def cfg_default(tmp_path):
+    return make_cfg(tmp_path, default_balances=True)
 
 
 class Env:
@@ -94,7 +109,9 @@ def now_ms(env):
     return int(env.clock() * 1000)
 
 
-def test_full_cycle_semi(cfg_path, capsys):
+@pytest.mark.parametrize("balances", ["large", "default"])
+def test_full_cycle_semi(balances, request, capsys):
+    cfg_path = request.getfixturevalue("cfg_path" if balances == "large" else "cfg_default")
     env = Env(cfg_path)
 
     async def scenario():
@@ -104,6 +121,9 @@ def test_full_cycle_semi(cfg_path, capsys):
         prop = pending[0]
         assert prop.base == "HOT" and prop.status == "pending"
         assert prop.expires_at == now_ms(env) + 900_000
+        if balances == "default":
+            # 250 USD на связку не помещаются в 170 USD на bybit — капитал урезан
+            assert prop.capital == pytest.approx(170.0 * 0.98)
         assert f"python -m engine approve {prop.id}" in env.notifier.texts()
 
         assert main(["--config", cfg_path, "approve", str(prop.id)]) == 0
@@ -277,6 +297,45 @@ def test_approve_rechecks_limits(cfg_path):
     assert cmd["status"] == "error" and "максимум" in cmd["result"]
     assert env.proposal(pid).status == "pending"
     assert [p.base for p in env.db.positions()] == ["ETH"]
+
+
+def test_candidate_dropped_when_balance_too_small(cfg_path):
+    env = Env(cfg_path)
+    env.db.set_kv("paper_balances", {"bybit": 15.0})
+    try:
+        run(env.runner.tick_collect())
+    finally:
+        run(env.collector.close())
+    assert env.db.pending_proposals(now_ms(env)) == []
+    skips = env.audits("skip")
+    assert skips and "недостаточно свободного баланса" in skips[0]["detail"]
+
+
+def test_approve_caps_capital_by_current_balance(cfg_path):
+    env = Env(cfg_path)
+    try:
+        run(env.runner.tick_collect())
+        pid = env.db.pending_proposals(now_ms(env))[0].id
+        assert env.proposal(pid).capital == pytest.approx(5000.0)
+        # баланс ушёл почти в ноль — подтверждение отклоняется, предложение ждёт
+        env.db.set_kv("paper_balances", {"bybit": 10.0})
+        env.db.set_kv("day_start_equity", None)  # иначе сработает лимит дневного убытка
+        cid = env.db.add_command("approve", str(pid))
+        run(env.runner.tick_commands())
+        assert env.command(cid)["status"] == "error"
+        assert "недостаточно свободного баланса" in env.command(cid)["result"]
+        assert env.proposal(pid).status == "pending"
+        # баланса хватает на часть — открываем на урезанный капитал
+        env.db.set_kv("paper_balances", {"bybit": 3000.0})
+        env.db.set_kv("day_start_equity", None)
+        cid = env.db.add_command("approve", str(pid))
+        run(env.runner.tick_commands())
+    finally:
+        run(env.collector.close())
+    assert env.command(cid)["status"] == "done"
+    p = env.proposal(pid)
+    assert p.status == "executed" and p.capital == pytest.approx(2940.0)
+    assert [(x.status, x.capital) for x in env.db.positions()] == [("open", pytest.approx(2940.0))]
 
 
 def test_approve_unknown_proposal(cfg_path):

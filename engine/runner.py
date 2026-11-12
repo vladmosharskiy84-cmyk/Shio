@@ -7,7 +7,8 @@ import time
 
 from engine import ledger
 from engine.collector import MarketSnapshot
-from engine.decider import capital_for_pair, check_limits, decide
+from engine.decider import (MIN_PAIR_CAPITAL, NO_BALANCE_REASON, affordable_capital,
+                            capital_for_pair, check_limits, decide)
 from engine.executor import close_pair, open_pair
 from engine.finder import find_candidates
 from engine.guardian import guard, leg_buffer
@@ -113,9 +114,12 @@ class Runner:
             log.warning("Сверка: расхождений %d", len(issues))
 
     # --- сбор и решения ---
-    async def _equity(self, now: int) -> tuple[float, float]:
+    async def _balances(self) -> dict[str, float]:
         trade = [n for n, e in self.settings.exchanges.items() if e.trade]
-        balances = {ex: await self.broker.free_balance(ex) for ex in trade}
+        return {ex: await self.broker.free_balance(ex) for ex in trade}
+
+    async def _equity(self, now: int) -> tuple[float, float]:
+        balances = await self._balances()
         snap = self.snapshot or MarketSnapshot(ts=now)
         eq = ledger.equity(self.db, balances, self.db.positions(_HELD), snap)
         return eq, ledger.day_pnl(self.db, now, eq)
@@ -143,6 +147,7 @@ class Runner:
 
         cands = await find_candidates(snap, self.collector, self.settings,
                                       lambda kind: capital_for_pair(eq, self.settings))
+        cands = await self._fit_to_balances(cands)
         paused = bool(self.db.get_kv("paused", False))
         decisions = decide(cands, self.db.positions(_HELD), self.db.pending_proposals(now),
                            eq, dpnl, paused, self.settings)
@@ -163,10 +168,29 @@ class Runner:
                  "P&L за день %+.2f USD", len(cands), counts["propose"], counts["enter"],
                  counts["skip"], eq, dpnl)
 
+    async def _fit_to_balances(self, cands: list) -> list:
+        """Урезать капитал кандидатов до свободных балансов их бирж; слишком малые — убрать."""
+        balances = await self._balances()
+        out = []
+        for c in cands:
+            capital = affordable_capital(c.op.kind, c.legs_plan, c.capital, balances)
+            if capital < MIN_PAIR_CAPITAL:
+                self.db.audit("skip", {"base": c.op.base, "kind": c.op.kind,
+                                       "reason": NO_BALANCE_REASON})
+                continue
+            c.capital = capital
+            out.append(c)
+        return out
+
+    def _expected_profit(self, apr: float, capital: float) -> float:
+        """Ожидаемая прибыль за hold_days при данной доходности (% годовых на капитал)."""
+        return apr / 100 * capital * self.settings.hold_days / 365
+
     async def _propose(self, c, now: int) -> None:
         ttl = self.settings.limits.proposal_ttl_s
         p = Proposal(None, now, now + ttl * 1000, c.op.base, c.op.kind, c.profile, c.legs_plan,
-                     c.capital, c.op.apr_net_capital, c.op.profit_hold_usd, "pending")
+                     c.capital, c.op.apr_net_capital,
+                     self._expected_profit(c.op.apr_net_capital, c.capital), "pending")
         self.db.save_proposal(p)
         self.db.audit("proposal", {"id": p.id, "base": p.base, "kind": p.kind,
                                    "capital": p.capital, "apr": p.expected_apr})
@@ -256,8 +280,15 @@ class Runner:
         others = [x for x in self.db.pending_proposals(now) if x.id != p.id]
         reason = check_limits(p.base, p.profile, p.capital, self.db.positions(_HELD), others,
                               eq, dpnl, bool(self.db.get_kv("paused", False)), self.settings)
+        if reason is None:
+            capital = affordable_capital(p.kind, p.legs_plan, p.capital, await self._balances())
+            if capital < MIN_PAIR_CAPITAL:
+                reason = NO_BALANCE_REASON
         if reason is not None:
             raise CommandError(f"предложение #{p.id} не исполнено: {reason}")
+        if capital < p.capital:
+            p.expected_profit = self._expected_profit(p.expected_apr, capital)
+            p.capital = capital
         p.status = "approved"
         self.db.update_proposal(p)
         pos = await open_pair(p.legs_plan, p.capital, p.base, p.kind, p.profile,
