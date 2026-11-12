@@ -55,7 +55,8 @@ class TelegramNotifier:
             log.exception("Не удалось записать telegram_error")
         return None
 
-    async def send(self, text: str, level: str = "info") -> None:
+    async def send(self, text: str, level: str = "info",
+                   buttons: list[list[Button]] | None = None) -> None:
         await self._log.send(text, level)
         key = (level, text)
         now = self.clock()
@@ -64,9 +65,11 @@ class TelegramNotifier:
             return
         body = _PREFIX.get(level, "") + text
         delivered = True
-        for part in split_message(body):
-            sent = await self._retry("send_message",
-                                     lambda part=part: self.api.send_message(self.chat_id, part))
+        parts = split_message(body)
+        for i, part in enumerate(parts):
+            kb = buttons if i == len(parts) - 1 else None  # кнопки — под последней частью
+            sent = await self._retry(
+                "send_message", lambda part=part, kb=kb: self.api.send_message(self.chat_id, part, kb))
             if sent is None:
                 delivered = False
                 break

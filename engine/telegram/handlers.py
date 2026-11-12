@@ -112,6 +112,8 @@ def handle_callback(data: str, chat_id: int, user_id: int | None, db, settings,
             return Reply("Уже выполняется.")
         db.add_command("stop_all")
         return Reply(ACCEPTED)
+    if data.startswith("close:ask:"):  # кнопка «Закрыть» под предупреждением Guardian
+        return _ask_close(data.removeprefix("close:ask:"), db)
     if data.startswith("close:confirm:"):
         pid = _parse_id(data.removeprefix("close:confirm:"))
         if pid is None:

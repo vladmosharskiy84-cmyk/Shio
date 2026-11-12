@@ -90,9 +90,12 @@ class FakeNotifier:
         self.proposals: list[tuple] = []  # (Proposal, ttl_min, hold_days)
         self.document_failures = 0  # сколько первых send_document вернут False
         self.documents: list[tuple[str, bytes, str]] = []  # (имя файла, данные, подпись)
+        self.buttons: list = []  # кнопки отправок, у которых они были
 
-    async def send(self, text: str, level: str = "info") -> None:
+    async def send(self, text: str, level: str = "info", buttons=None) -> None:
         self.sent.append((text, level))
+        if buttons:
+            self.buttons.append(buttons)
 
     async def proposal(self, p, ttl_min: int, hold_days: float) -> None:
         self.proposals.append((p, ttl_min, hold_days))

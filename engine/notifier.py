@@ -1,4 +1,4 @@
-"""Уведомления: протокол и реализация «в журнал» (Telegram — на следующих этапах)."""
+"""Уведомления: протокол и реализация «в журнал» (Telegram — engine/telegram/notifier.py)."""
 from __future__ import annotations
 
 import logging
@@ -7,6 +7,7 @@ from typing import Literal, Protocol
 
 from engine.db import Db
 from engine.models import Proposal
+from engine.telegram.api import Button
 
 log = logging.getLogger(__name__)
 
@@ -18,7 +19,10 @@ _LOG_LEVELS = {"info": logging.INFO, "warn": logging.WARNING, "warning": logging
 
 
 class Notifier(Protocol):
-    async def send(self, text: str, level: Level = "info") -> None: ...
+    async def send(self, text: str, level: Level = "info",
+                   buttons: list[list[Button]] | None = None) -> None:
+        """buttons — кнопки под сообщением (в Telegram); остальные реализации их игнорируют."""
+        ...
 
     async def proposal(self, p: Proposal, ttl_min: int, hold_days: float) -> None: ...
 
@@ -51,7 +55,8 @@ class LogNotifier:
         self.db = db
         self.backup_dir = Path(backup_dir)
 
-    async def send(self, text: str, level: str = "info") -> None:
+    async def send(self, text: str, level: str = "info",
+                   buttons: list[list[Button]] | None = None) -> None:
         log.log(_LOG_LEVELS.get(level, logging.INFO), text)
         self.db.audit("notify", {"text": text, "level": level})
 

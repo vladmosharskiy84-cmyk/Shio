@@ -121,3 +121,22 @@ def test_send_document_gives_up_without_raising(tmp_path):
     assert api.attempts == 3 and api.documents == []
     assert len(audits(db, "telegram_error")) == 1
     assert (n.backup_dir / "b.bin").read_bytes() == b"data"  # запасная копия на диске
+
+
+def test_send_with_buttons_puts_them_on_last_part(tmp_path):
+    n, api, _, _ = make(tmp_path)
+    kb = [[Button("Закрыть", "close:ask:3")]]
+    run(n.send("ставка развернулась", "warn", buttons=kb))
+    assert api.messages[-1]["buttons"] == kb
+    long = "\n".join("y" * 100 for _ in range(100))
+    run(n.send(long, "info", buttons=kb))
+    tail = [m["buttons"] for m in api.messages[1:]]
+    assert tail[-1] == kb and all(b is None for b in tail[:-1])
+
+
+def test_log_notifier_accepts_buttons(tmp_path):
+    from engine.notifier import LogNotifier
+    db = Db(str(tmp_path / "l.db"))
+    db.init()
+    run(LogNotifier(db).send("x", "warn", buttons=[[Button("Закрыть", "close:ask:1")]]))
+    assert len(audits(db, "notify")) == 1

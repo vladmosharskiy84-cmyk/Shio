@@ -169,3 +169,13 @@ def test_only_owner_in_private_chat_is_served(db, settings, chat_id, user_id):
     events = foreign_events(db)
     assert len(events) == 1  # тихо и не чаще раза в час
     assert f'"user_id": {"null" if user_id is None else user_id}' in events[0]["detail"]
+
+
+def test_close_button_from_alert_asks_confirmation(db, settings):
+    pid = add_position(db)
+    r = handle_callback(f"close:ask:{pid}", OWNER, OWNER, db, settings, NOW)
+    assert f"Закрыть позицию {pid}" in r.text
+    assert r.buttons == [[Button("Да, закрыть", f"close:confirm:{pid}"), Button("Отмена", "cancel")]]
+    assert cmds(db) == []  # без второго нажатия ничего не закрывается
+    assert "не найдена" in handle_callback("close:ask:999", OWNER, OWNER, db, settings, NOW).text
+    assert handle_callback(f"close:ask:{pid}", 7, 7, db, settings, NOW) is None

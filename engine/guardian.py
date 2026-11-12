@@ -17,6 +17,7 @@ from typing import Literal
 from engine.collector import MarketSnapshot
 from engine.executor import R_LIQUIDATED, close_pair, reduce_leg
 from engine.models import Leg, Position
+from engine.telegram.api import Button
 from scanner.calc import liquidation_price, margin_buffer
 
 _HOUR_MS = 3_600_000
@@ -116,11 +117,11 @@ class _ThrottledNotifier:
         self.notifier, self.db, self.key, self.now_ms = notifier, db, key, now_ms
         self.levels = levels
 
-    async def send(self, text: str, level: str = "info") -> None:
+    async def send(self, text: str, level: str = "info", buttons=None) -> None:
         if self.levels is not None and level not in self.levels:
-            await self.notifier.send(text, level)
+            await self.notifier.send(text, level, buttons=buttons)
         elif _once_per_hour(self.db, self.key, self.now_ms):
-            await self.notifier.send(text, level)
+            await self.notifier.send(text, level, buttons=buttons)
 
 
 def _leg_marks(pos, snapshot, last_marks) -> tuple[dict[int, float], list[str], list[str], list[str]]:
@@ -266,8 +267,9 @@ async def _guard_position(pos, snapshot, broker, db, notifier, settings, last_ma
             act("propose_close", f"{reason}: ожидаемый доход за 24 ч {income:+.2f} USD")
             if _once_per_hour(db, f"guard:propose:{pos.id}", now):
                 await notifier.send(
-                    f"Связка {pos.base}: ставка развернулась, ожидаемый доход за 24 ч "
-                    f"{income:+.2f} USD. Предлагаю закрыть связку.", "warning")
+                    f"Связка #{pos.id} {pos.base}: ставка развернулась, ожидаемый доход за 24 ч "
+                    f"{income:+.2f} USD. Предлагаю закрыть связку.", "warning",
+                    buttons=[[Button("Закрыть", f"close:ask:{pos.id}")]])
 
     return out or [GuardAction(pos.id, "ok", "всё в порядке")]
 

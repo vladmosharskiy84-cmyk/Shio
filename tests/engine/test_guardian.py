@@ -8,6 +8,7 @@ from engine.config import load_settings
 from engine.db import Db
 from engine.guardian import GuardAction, guard
 from engine.models import Leg, Position
+from engine.telegram.api import Button
 from scanner.calc import PerpInfo, SpotInfo, liquidation_price, margin_buffer
 from tests.engine.fakes import FakeNotifier, ScriptedBroker
 
@@ -192,6 +193,8 @@ def test_reversal_closes_in_auto_proposes_in_semi(db, settings):
     assert kinds(actions) == ["propose_close"]
     assert broker.calls == [] and db.get_position(p.id).status == "open"
     assert len(notifier.sent) == 1 and "ставка развернулась" in notifier.sent[0][0]
+    assert f"#{p.id}" in notifier.sent[0][0]
+    assert notifier.buttons == [[[Button("Закрыть", f"close:ask:{p.id}")]]]
     do_guard([p], snap(rate=-0.0001), broker, db, semi, notifier, now=NOW + 1000)
     assert len(notifier.sent) == 1  # не чаще раза в час
 
@@ -238,7 +241,7 @@ def test_error_in_one_position_does_not_stop_others(db, settings):
 
 def test_error_in_notifier_is_contained(db, settings):
     class Broken(FakeNotifier):
-        async def send(self, text, level="info"):
+        async def send(self, text, level="info", buttons=None):
             if "Связка X" in text:
                 raise RuntimeError("нет связи")
             await super().send(text, level)
