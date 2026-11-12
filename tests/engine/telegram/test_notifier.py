@@ -26,7 +26,8 @@ def make(tmp_path, api=None, dedupe_s=600, retries=3):
     db.init()
     api = api or FakeTelegramApi()
     clock = Clock()
-    n = TelegramNotifier(api, CHAT, db, dedupe_s, clock=clock, retries=retries, retry_delay_s=0)
+    n = TelegramNotifier(api, CHAT, db, dedupe_s, clock=clock, retries=retries, retry_delay_s=0,
+                         backup_dir=tmp_path / "backups")
     return n, api, db, clock
 
 
@@ -109,13 +110,14 @@ def test_proposal_failure_does_not_raise(tmp_path):
 
 def test_send_document_retries_and_never_raises(tmp_path):
     n, api, db, _ = make(tmp_path, api=FakeTelegramApi(fail_times=1))
-    run(n.send_document("b.bin", b"data", "копия"))
+    assert run(n.send_document("b.bin", b"data", "копия")) is True
     assert api.documents == [{"chat_id": CHAT, "filename": "b.bin", "data": b"data",
                               "caption": "копия"}]
 
 
 def test_send_document_gives_up_without_raising(tmp_path):
     n, api, db, _ = make(tmp_path, api=FakeTelegramApi(fail_times=9))
-    run(n.send_document("b.bin", b"data", "копия"))
+    assert run(n.send_document("b.bin", b"data", "копия")) is False
     assert api.attempts == 3 and api.documents == []
     assert len(audits(db, "telegram_error")) == 1
+    assert (n.backup_dir / "b.bin").read_bytes() == b"data"  # запасная копия на диске

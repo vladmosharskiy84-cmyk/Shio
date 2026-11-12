@@ -76,10 +76,17 @@ def restore(blob: bytes, key: bytes, db_path: str) -> str:
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
         _check_integrity(tmp_name)
         old = ""
         if target.exists():
-            old = f"{db_path}.before-restore-{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}"
+            stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+            old = f"{db_path}.before-restore-{stamp}"
+            n = 1
+            while os.path.exists(old):  # второе восстановление в ту же секунду
+                n += 1
+                old = f"{db_path}.before-restore-{stamp}-{n}"
             os.replace(target, old)
             for suffix in ("-wal", "-shm"):  # хвосты журнала старой базы не должны попасть в новую
                 side = Path(db_path + suffix)

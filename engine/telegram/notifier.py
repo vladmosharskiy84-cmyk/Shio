@@ -4,11 +4,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from pathlib import Path
 from typing import Awaitable, Callable, TypeVar
 
 from engine.db import Db
 from engine.models import Proposal
-from engine.notifier import LogNotifier, format_proposal
+from engine.notifier import LogNotifier, format_proposal, save_backup_file
 from engine.report import split_message
 from engine.telegram.api import Button, TelegramApi
 
@@ -24,7 +25,7 @@ class TelegramNotifier:
 
     def __init__(self, api: TelegramApi, chat_id: int, db: Db, dedupe_s: int,
                  clock: Callable[[], float] = time.time, retries: int = 3,
-                 retry_delay_s: float = 1.0):
+                 retry_delay_s: float = 1.0, backup_dir: str | Path = "data/backups"):
         self.api = api
         self.chat_id = chat_id
         self.db = db
@@ -32,7 +33,8 @@ class TelegramNotifier:
         self.clock = clock
         self.retries = retries
         self.retry_delay_s = retry_delay_s
-        self._log = LogNotifier(db)
+        self._log = LogNotifier(db, backup_dir)
+        self.backup_dir = Path(backup_dir)
         self._last_sent: dict[tuple[str, str], float] = {}
 
     async def _retry(self, what: str, call: Callable[[], Awaitable[T]]) -> T | None:
@@ -80,6 +82,17 @@ class TelegramNotifier:
         if message_id is not None:
             self.db.set_kv(f"tg_msg:proposal:{p.id}", message_id)
 
-    async def send_document(self, filename: str, data: bytes, caption: str) -> None:
-        await self._retry("send_document", lambda: self.api.send_document(
-            self.chat_id, filename, data, caption))
+    async def send_document(self, filename: str, data: bytes, caption: str) -> bool:
+        """True — доставлено в Telegram. Иначе файл сохраняется локально и возвращается False."""
+        async def call() -> bool:
+            await self.api.send_document(self.chat_id, filename, data, caption)
+            return True
+
+        if await self._retry("send_document", call):
+            return True
+        try:
+            path = save_backup_file(self.backup_dir, filename, data)
+            log.warning("Файл %s не ушёл в Telegram, сохранён локально: %s", filename, path)
+        except OSError:
+            log.exception("Не удалось сохранить файл %s локально", filename)
+        return False

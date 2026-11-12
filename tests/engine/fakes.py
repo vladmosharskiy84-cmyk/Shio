@@ -88,6 +88,7 @@ class FakeNotifier:
     def __init__(self):
         self.sent: list[tuple[str, str]] = []
         self.proposals: list[tuple] = []  # (Proposal, ttl_min, hold_days)
+        self.document_failures = 0  # сколько первых send_document вернут False
         self.documents: list[tuple[str, bytes, str]] = []  # (имя файла, данные, подпись)
 
     async def send(self, text: str, level: str = "info") -> None:
@@ -96,8 +97,12 @@ class FakeNotifier:
     async def proposal(self, p, ttl_min: int, hold_days: float) -> None:
         self.proposals.append((p, ttl_min, hold_days))
 
-    async def send_document(self, filename: str, data: bytes, caption: str) -> None:
+    async def send_document(self, filename: str, data: bytes, caption: str) -> bool:
+        if self.document_failures > 0:
+            self.document_failures -= 1
+            return False
         self.documents.append((filename, data, caption))
+        return True
 
     def texts(self) -> str:
         return "\n".join(t for t, _ in self.sent)

@@ -22,6 +22,7 @@ log = logging.getLogger(__name__)
 COMMANDS_INTERVAL_S = 2
 HEARTBEAT_INTERVAL_S = 60
 DAILY_INTERVAL_S = 60
+DAILY_RETRY_S = 20 * 60  # повтор сводки/копии после сбоя
 RECONCILE_INTERVAL_S = 600
 _LOG_SKIPS = 5  # сколько причин пропуска лучших кандидатов писать в журнал за тик
 
@@ -123,20 +124,27 @@ class Runner:
         await self._guarded("daily_backup", self._daily_backup)
 
     def _due_today(self, mark: str, hour_utc: int) -> str | None:
-        """Дата UTC (YYYY-MM-DD), если час уже наступил и за этот день отметки ещё нет."""
+        """Дата UTC (YYYY-MM-DD), если час наступил, за день нет успеха и пауза после попытки прошла.
+
+        Отметка успеха — kv `mark`; время последней попытки — kv `mark:try` (повтор не чаще
+        раза в DAILY_RETRY_S, и только в тот же день UTC).
+        """
         now = datetime.fromtimestamp(self.clock(), tz=timezone.utc)
         today = now.strftime("%Y-%m-%d")
         if now.hour < hour_utc or self.db.get_kv(mark) == today:
             return None
+        tried = self.db.get_kv(mark + ":try")
+        if tried is not None and self.now_ms() - tried < DAILY_RETRY_S * 1000:
+            return None
+        self.db.set_kv(mark + ":try", self.now_ms())
         return today
 
     async def _daily_summary(self) -> None:
         today = self._due_today("daily:summary", self.settings.telegram.daily_summary_hour_utc)
         if today is None:
             return
-        self.db.set_kv("daily:summary", today)  # сначала отметка: при сбое не спамим каждую минуту
         now = self.now_ms()
-        eq, dpnl = await self._equity(now)
+        eq, dpnl = await self._equity(now)  # при сбое отметки нет — повтор через DAILY_RETRY_S
         day_start = int(datetime.strptime(today, "%Y-%m-%d").replace(tzinfo=timezone.utc)
                         .timestamp() * 1000)
         funding = self.db.funding_total(day_start)
@@ -149,6 +157,12 @@ class Runner:
             f"Funding за день: {funding:+.2f} USD\n"
             f"Открытых связок: {held}\n"
             f"Ожидают решения предложений: {pending}")
+        self.db.set_kv("daily:summary", today)
+
+    async def _warn_backup_once(self, today: str, text: str) -> None:
+        if self.db.get_kv("daily:backup:warned") != today:
+            self.db.set_kv("daily:backup:warned", today)
+            await self.notifier.send(text, "warn")
 
     async def _daily_backup(self) -> None:
         cfg = self.settings.backup
@@ -157,20 +171,33 @@ class Runner:
         today = self._due_today("daily:backup", cfg.hour_utc)
         if today is None:
             return
-        self.db.set_kv("daily:backup", today)
         try:
             key = backup.load_key()
         except backup.BackupError as exc:
-            await self.notifier.send(f"Резервная копия не сделана: {exc}", "warn")
+            await self._warn_backup_once(today, f"Резервная копия не сделана: {exc}")
+            self.db.set_kv("daily:backup", today)  # ключ сам не появится — не повторяем
             return
         if key is None:
-            await self.notifier.send(
-                "Резервная копия не сделана: не задан ключ шифрования SHIO_BACKUP_KEY "
-                "(см. раздел «Резервные копии» в README).", "warn")
+            await self._warn_backup_once(
+                today, "Резервная копия не сделана: не задан ключ шифрования SHIO_BACKUP_KEY "
+                       "(см. раздел «Резервные копии» в README).")
+            self.db.set_kv("daily:backup", today)
             return
-        data = backup.encrypt(backup.snapshot_bytes(self.db), key)
-        await self.notifier.send_document(f"shio-{today}.db.enc", data,
-                                          f"Резервная копия Shio за {today} (UTC)")
+        try:
+            data = backup.encrypt(backup.snapshot_bytes(self.db), key)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("Не удалось сделать снимок базы: %s", exc)
+            await self._warn_backup_once(
+                today, f"Резервная копия не сделана: ошибка снимка базы ({exc!r}). "
+                       f"Повторю через {DAILY_RETRY_S // 60} мин.")
+            return
+        delivered = await self.notifier.send_document(
+            f"shio-{today}.db.enc", data, f"Резервная копия Shio за {today} (UTC)")
+        if delivered:
+            self.db.set_kv("daily:backup", today)
+        else:
+            log.warning("Копия за %s не доставлена, повтор через %d мин.", today,
+                        DAILY_RETRY_S // 60)
 
     async def _heartbeat(self) -> None:
         self.db.heartbeat(self.now_ms())

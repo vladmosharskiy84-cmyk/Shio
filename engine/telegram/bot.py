@@ -5,6 +5,7 @@ import asyncio
 import logging
 import os
 import time
+from pathlib import Path
 from typing import Any
 
 from aiogram import Bot, Dispatcher
@@ -52,21 +53,22 @@ class AiogramApi:
 def build_notifier(settings, db) -> tuple[Notifier, str | None]:
     """TelegramNotifier, если Telegram включён и есть токен; иначе LogNotifier и предупреждение."""
     cfg = settings.telegram
+    backups = Path(settings.db_path).parent / "backups"
     if not cfg.enabled:
         log.info("Telegram выключен (telegram.enabled: false), уведомления идут в журнал.")
-        return LogNotifier(db), None
+        return LogNotifier(db, backups), None
     token = os.environ.get(TOKEN_ENV, "").strip()
     if not token:
         log.warning("Telegram не настроен: не задана переменная окружения %s. "
                     "Двигатель работает с уведомлениями в журнал.", TOKEN_ENV)
-        return LogNotifier(db), None
+        return LogNotifier(db, backups), None
     try:
         api = AiogramApi(Bot(token))
     except Exception as exc:  # noqa: BLE001 — например, TokenValidationError
         log.warning("Telegram не настроен: токен в %s не подошёл (%s). "
                     "Двигатель работает с уведомлениями в журнал.", TOKEN_ENV, exc)
-        return LogNotifier(db), None
-    return TelegramNotifier(api, cfg.chat_id, db, cfg.dedupe_s), token
+        return LogNotifier(db, backups), None
+    return TelegramNotifier(api, cfg.chat_id, db, cfg.dedupe_s, backup_dir=backups), token
 
 
 # --- маршрутизация (чистые функции, тестируются без aiogram и сети) ---

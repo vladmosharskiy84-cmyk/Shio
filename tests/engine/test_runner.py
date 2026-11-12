@@ -760,6 +760,13 @@ def test_daily_summary_once_per_day(cfg_path, monkeypatch):
     env.settings.backup.enabled = False
     hour = env.settings.telegram.daily_summary_hour_utc
     try:
+        pid = env.db.save_position(Position(None, "perp-perp", "HOT", "calm", "open", 100.0, 1,
+                                            legs=[Leg(None, None, "bybit", HOT_PERP, "perp", "short",
+                                                      1.0, 100.0, 1.0, 100.0)]))
+        leg_id = env.db.get_position(pid).legs[0].id
+        day_start_ms = int(DAY0 * 1000)
+        env.db.add_funding(leg_id, day_start_ms - 3_600_000, 0.001, 99.0)  # вчера: не считается
+        env.db.add_funding(leg_id, day_start_ms + 3_600_000, 0.001, 7.5)
         at(env, hour - 1, 59)
         run(env.runner.tick_daily())
         assert env.notifier.sent == []
@@ -769,8 +776,12 @@ def test_daily_summary_once_per_day(cfg_path, monkeypatch):
         run(env.runner.tick_daily())
         summaries = [t for t, _ in env.notifier.sent if "Сводка" in t]
         assert len(summaries) == 1
+        text = summaries[0]
         for word in ("Капитал", "P&L", "Funding", "Открытых связок", "Ожидают"):
-            assert word in summaries[0]
+            assert word in text
+        assert "Funding за день: +7.50 USD" in text      # только выплаты текущих суток
+        assert "Открытых связок: 1" in text
+        assert "Ожидают решения предложений: 0" in text
         at(env, hour, day=1)
         run(env.runner.tick_daily())
         assert len([t for t, _ in env.notifier.sent if "Сводка" in t]) == 2
@@ -839,5 +850,91 @@ def test_backup_disabled_does_nothing(cfg_path, monkeypatch):
         at(env, env.settings.backup.hour_utc)
         run(env.runner.tick_daily())
         assert env.notifier.documents == [] and "SHIO_BACKUP_KEY" not in env.notifier.texts()
+    finally:
+        run(env.collector.close())
+
+
+def test_summary_retried_after_equity_failure(cfg_path, monkeypatch):
+    monkeypatch.delenv("SHIO_BACKUP_KEY", raising=False)
+    env = Env(cfg_path)
+    env.settings.backup.enabled = False
+    hour = env.settings.telegram.daily_summary_hour_utc
+    real = env.runner._equity
+    calls = []
+
+    async def flaky(now):
+        calls.append(now)
+        if len(calls) == 1:
+            raise RuntimeError("биржа недоступна")
+        return await real(now)
+
+    env.runner._equity = flaky
+    try:
+        at(env, hour)
+        run(env.runner.tick_daily())
+        assert env.notifier.sent == [] and env.db.get_kv("daily:summary") is None
+        assert len(env.audits("tick_error")) == 1
+        at(env, hour, 10)
+        run(env.runner.tick_daily())
+        assert len(calls) == 1                       # раньше 20 минут не повторяем
+        at(env, hour, 21)
+        run(env.runner.tick_daily())
+        assert len([t for t, _ in env.notifier.sent if "Сводка" in t]) == 1
+        at(env, hour, 45)
+        run(env.runner.tick_daily())
+        assert len(calls) == 2                       # после успеха больше не пытаемся
+    finally:
+        run(env.collector.close())
+
+
+def test_backup_retried_when_delivery_fails(cfg_path, monkeypatch):
+    monkeypatch.setenv("SHIO_BACKUP_KEY", __import__("base64").b64encode(bytes(32)).decode())
+    env = Env(cfg_path)
+    env.notifier.document_failures = 1
+    hour = env.settings.backup.hour_utc
+    try:
+        at(env, hour)
+        run(env.runner.tick_daily())
+        assert env.notifier.documents == [] and env.db.get_kv("daily:backup") is None
+        at(env, hour, 10)
+        run(env.runner.tick_daily())
+        assert env.notifier.documents == []
+        at(env, hour, 21)
+        run(env.runner.tick_daily())
+        assert len(env.notifier.documents) == 1
+        assert env.db.get_kv("daily:backup") is not None
+        at(env, hour, 50)
+        run(env.runner.tick_daily())
+        assert len(env.notifier.documents) == 1
+    finally:
+        run(env.collector.close())
+
+
+def test_backup_snapshot_failure_warns_once_and_retries(cfg_path, monkeypatch):
+    from engine import backup
+    monkeypatch.setenv("SHIO_BACKUP_KEY", __import__("base64").b64encode(bytes(32)).decode())
+    env = Env(cfg_path)
+    hour = env.settings.backup.hour_utc
+    real = backup.snapshot_bytes
+    state = {"fail": 2}
+
+    def flaky(db):
+        if state["fail"]:
+            state["fail"] -= 1
+            raise OSError("диск полон")
+        return real(db)
+
+    monkeypatch.setattr(backup, "snapshot_bytes", flaky)
+    try:
+        at(env, hour)
+        run(env.runner.tick_daily())
+        at(env, hour, 21)
+        run(env.runner.tick_daily())
+        warns = [(t, l) for t, l in env.notifier.sent if "снимка" in t]
+        assert len(warns) == 1 and warns[0][1] == "warn"   # предупреждение раз в день
+        assert env.notifier.documents == []
+        at(env, hour, 42)
+        run(env.runner.tick_daily())
+        assert len(env.notifier.documents) == 1
     finally:
         run(env.collector.close())

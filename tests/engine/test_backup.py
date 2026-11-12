@@ -12,6 +12,7 @@ from engine.__main__ import main
 from engine.backup import BackupError
 from engine.db import Db
 from engine.notifier import LogNotifier
+from tests.engine.test_db import make_position
 from tests.engine.test_runner import make_cfg
 
 KEY = bytes(range(32))
@@ -67,13 +68,19 @@ def test_restore_replaces_db_and_keeps_old(tmp_path):
     db = Db(str(tmp_path / "shio.db"))
     db.init()
     db.set_kv("marker", "from-backup")
+    pid = db.save_position(make_position())
     blob = backup.encrypt(backup.snapshot_bytes(db), KEY)
     db.set_kv("marker", "current")
+    changed = db.get_position(pid)
+    changed.status = "closed"
+    db.update_position(changed)
     db.conn.close()
     old = backup.restore(blob, KEY, str(tmp_path / "shio.db"))
     assert os.path.exists(old) and ".before-restore-" in old
     new = Db(str(tmp_path / "shio.db"))
     assert new.get_kv("marker") == "from-backup"
+    restored = new.get_position(pid)
+    assert restored.status == "open" and restored.base == "BTC" and len(restored.legs) == 2
     new.conn.close()
     prev = sqlite3.connect(old)
     assert prev.execute("SELECT value FROM kv WHERE key='marker'").fetchone()[0] == '"current"'
@@ -99,14 +106,18 @@ def test_restore_rejects_non_database(tmp_path):
 
 
 def test_log_notifier_saves_backup_file(tmp_path, monkeypatch, caplog):
-    monkeypatch.chdir(tmp_path)
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
     db = Db(":memory:")
     db.init()
+    folder = tmp_path / "data" / "backups"
     with caplog.at_level(logging.INFO):
-        run(LogNotifier(db).send_document("shio-2026-01-01.db.enc", b"abc", "копия"))
-    saved = tmp_path / "data" / "backups" / "shio-2026-01-01.db.enc"
-    assert saved.read_bytes() == b"abc"
-    assert str(saved.parent) in caplog.text or "data/backups" in caplog.text
+        ok = run(LogNotifier(db, folder).send_document("shio-2026-01-01.db.enc", b"abc", "копия"))
+    saved = folder / "shio-2026-01-01.db.enc"
+    assert ok is True and saved.read_bytes() == b"abc"
+    assert str(saved) in caplog.text
+    assert list(cwd.iterdir()) == []  # в текущей папке ничего не создано
 
 
 def test_restore_refuses_while_bot_alive(tmp_path, monkeypatch, capsys):
@@ -140,3 +151,33 @@ def test_restore_command_when_stopped(tmp_path, monkeypatch, capsys):
     db = Db(str(tmp_path / "shio.db"))
     assert db.get_kv("marker") == 1
     db.conn.close()
+
+
+def test_two_restores_in_same_second_keep_both_old_files(tmp_path):
+    path = str(tmp_path / "shio.db")
+    db = Db(path)
+    db.init()
+    db.set_kv("m", 1)
+    blob = backup.encrypt(backup.snapshot_bytes(db), KEY)
+    db.conn.close()
+    first = backup.restore(blob, KEY, path)
+    second = backup.restore(blob, KEY, path)
+    assert first != second and os.path.exists(first) and os.path.exists(second)
+
+
+def test_restore_without_existing_db_creates_no_empty_one_and_no_fake_old_path(
+        tmp_path, monkeypatch, capsys):
+    cfg = make_cfg(tmp_path)
+    monkeypatch.setenv("SHIO_BACKUP_KEY", b64())
+    src = Db(str(tmp_path / "src.db"))
+    src.init()
+    f = tmp_path / "b.enc"
+    f.write_bytes(backup.encrypt(backup.snapshot_bytes(src), KEY))
+    src.conn.close()
+    missing = tmp_path / "nofile.enc"
+    assert main(["--config", cfg, "restore", str(missing)]) == 1
+    assert not (tmp_path / "shio.db").exists()  # пустая база не создана
+    capsys.readouterr()
+    assert main(["--config", cfg, "restore", str(f)]) == 0
+    out = capsys.readouterr().out
+    assert "before-restore" not in out and (tmp_path / "shio.db").exists()

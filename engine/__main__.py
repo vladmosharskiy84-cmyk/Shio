@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import sqlite3
 import sys
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -97,8 +98,15 @@ def _cmd_stop(settings, args) -> int:
 def _cmd_restore(settings: Settings, args) -> int:
     from engine import backup
 
-    with _open_db(settings) as db:
-        heartbeat = db.get_kv("heartbeat")
+    heartbeat = None
+    if Path(settings.db_path).exists():  # не создаём пустую базу, если файла нет
+        db = Db(settings.db_path)
+        try:
+            heartbeat = db.get_kv("heartbeat")
+        except sqlite3.DatabaseError:
+            pass  # повреждённая база: проверять нечего, её как раз и восстанавливают
+        finally:
+            db.conn.close()
     if heartbeat is not None and _now_ms() - heartbeat <= _ALIVE_MS:
         print("Бот сейчас запущен. Остановите его (Ctrl+C в окне с python -m engine run), "
               "подождите 3 минуты и повторите: восстановление при работающем боте испортит базу.")
