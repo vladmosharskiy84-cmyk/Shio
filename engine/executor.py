@@ -55,11 +55,15 @@ def _add_fill(pos: Position, leg: Leg, fill) -> None:
 
 
 def _reduce_fill(pos: Position, leg: Leg, fill) -> None:
-    """Уменьшение ноги: P&L цены сразу попадает в realized_pnl."""
+    """Уменьшение ноги: P&L цены сразу попадает в realized_pnl.
+
+    Маржа уменьшается пропорционально объёму, чтобы довнесённая маржа не терялась.
+    """
     pos.realized_pnl += _price_pnl(leg, fill.avg_price, fill.filled)
+    before = leg.amount
     leg.amount = max(leg.amount - fill.filled, 0.0)
     leg.fees_paid += fill.fee
-    leg.margin = _margin(leg)
+    leg.margin = leg.margin * leg.amount / before if before > 0 else 0.0
 
 
 async def _fill_up(broker, db, pos: Position, leg: Leg, side: str, amount: float, settings,
@@ -110,9 +114,27 @@ async def _finish_failed(pos: Position, db, notifier, text: str, level: str, det
 
 
 async def _shrink(pos, leg, extra, broker, db, settings) -> _Result:
-    """Встречный ордер, уменьшающий ногу на extra."""
+    """Встречный ордер, уменьшающий ногу на extra (общее ядро open_pair и reduce_leg)."""
     return await _fill_up(broker, db, pos, leg, _close_side(leg), extra, settings,
                           lambda f: _reduce_fill(pos, leg, f))
+
+
+async def reduce_leg(position: Position, leg: Leg, amount: float, broker, db, notifier,
+                     settings) -> float:
+    """Уменьшает открытую ногу на amount встречными IOC (до leg_retries попыток).
+
+    P&L цены идёт в position.realized_pnl, комиссия — в leg.fees_paid, позиция
+    сохраняется после каждого исполнения. Возвращает фактически сокращённый объём.
+    Если сократить полностью не удалось — запись в журнале и тревога.
+    """
+    res = await _shrink(position, leg, amount, broker, db, settings)
+    db.audit("leg_reduced", {"position_id": position.id, "exchange": leg.exchange,
+                             "symbol": leg.symbol, "requested": amount, "reduced": res.filled})
+    if not res.complete:
+        await notifier.send(
+            f"Связка {position.base}: не удалось сократить ногу на {leg.exchange} "
+            f"на {amount - res.filled:g} (сокращено {res.filled:g}). Нужна проверка.", "alert")
+    return res.filled
 
 
 async def open_pair(plan: list[dict], capital: float, base: str, kind: str, profile: str,

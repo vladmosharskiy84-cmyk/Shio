@@ -4,7 +4,7 @@ import pytest
 
 from engine.config import load_settings
 from engine.db import Db
-from engine.executor import close_pair, open_pair
+from engine.executor import close_pair, open_pair, reduce_leg
 from engine.models import Position
 from engine.broker import Fill
 from tests.engine.fakes import FakeNotifier, ScriptedBroker
@@ -205,3 +205,23 @@ def test_close_marks_empty_open_leg_closed(db, settings):
     pos.legs[0].amount = 0.0
     out = run(close_pair(pos, "тест", broker, db, notifier, settings))
     assert out.status == "closed" and not out.legs[0].open
+
+
+def test_reduce_leg_books_pnl_fee_and_keeps_topped_up_margin(db, settings):
+    broker = ScriptedBroker()
+    pos, notifier = do_open(broker, db, settings)
+    spot, perp = pos.legs
+    perp.margin = 400.0  # маржа довнесена сверх 250
+    broker.prices = {("bybit", SPOT): 110.0, ("okx", PERP): 100.0}
+    got = run(reduce_leg(pos, spot, 1.0, broker, db, notifier, settings))
+    assert got == pytest.approx(1.0)
+    assert broker.calls[-1] == ("bybit", SPOT, "spot", "sell", 1.0)
+    assert spot.amount == pytest.approx(6.5)
+    assert pos.realized_pnl == pytest.approx(10.0)  # (110-100)*1
+    assert spot.fees_paid == pytest.approx(0.75 + 0.11)
+    got = run(reduce_leg(pos, perp, 1.5, broker, db, notifier, settings))
+    assert got == pytest.approx(1.5)
+    assert perp.margin == pytest.approx(400.0 * 6.0 / 7.5)  # доливка сохраняется пропорционально
+    stored = db.get_position(pos.id)
+    assert stored.legs[0].amount == pytest.approx(6.5) and stored.realized_pnl == pytest.approx(10.0)
+    assert stored.legs[1].margin == pytest.approx(320.0)
