@@ -1,8 +1,10 @@
 import asyncio
 
+import pytest
+
 from engine.db import Db
-from engine.launchpool import (Announcement, BybitAnnouncements, OkxAnnouncements,
-                               check_announcements)
+from engine.launchpool import (Announcement, AnnouncementError, BybitAnnouncements,
+                               OkxAnnouncements, check_announcements)
 from tests.engine.fakes import FakeNotifier
 
 
@@ -103,19 +105,41 @@ def test_seen_list_capped_at_500(tmp_path):
 
 
 def test_bybit_and_okx_parsing_defensive():
-    http = FakeHttp({"result": {"list": [
+    http = FakeHttp({"retCode": 0, "result": {"list": [
         {"title": "Launchpool A", "url": "https://b/1", "publishTime": 123},
         {"title": "no url"}, "junk", {"title": "T", "url": "https://b/2", "publishTime": "45"}]}})
     got = run(BybitAnnouncements(http).fetch())
     assert [(a.id, a.published_ms) for a in got] == [("https://b/1", 123), ("https://b/2", 45)]
     assert got[0].exchange == "bybit"
     assert "api.bybit.com/v5/announcements/index" in http.urls[0]
-    http = FakeHttp({"data": [{"details": [
+    http = FakeHttp({"code": "0", "data": [{"details": [
         {"title": "Jumpstart", "url": "https://o/1", "pTime": "99"}, {"url": "x"}]}, "junk"]})
     got = run(OkxAnnouncements(http).fetch())
     assert [(a.exchange, a.id, a.published_ms) for a in got] == [("okx", "https://o/1", 99)]
-    assert run(OkxAnnouncements(FakeHttp({})).fetch()) == []
-    assert run(BybitAnnouncements(FakeHttp([])).fetch()) == []
+    assert run(OkxAnnouncements(FakeHttp({"code": "0"})).fetch()) == []
+    assert run(BybitAnnouncements(FakeHttp({"retCode": 0})).fetch()) == []
+
+
+@pytest.mark.parametrize("payload", [{}, [], {"retCode": 10006, "retMsg": "Too many visits"},
+                                     {"retCode": "1"}])
+def test_bybit_error_code_is_failed_fetch(payload):
+    with pytest.raises(AnnouncementError):
+        run(BybitAnnouncements(FakeHttp(payload)).fetch())
+
+
+@pytest.mark.parametrize("payload", [{}, [], {"code": "50011", "msg": "Too Many Requests"},
+                                     {"code": 1}])
+def test_okx_error_code_is_failed_fetch(payload):
+    with pytest.raises(AnnouncementError):
+        run(OkxAnnouncements(FakeHttp(payload)).fetch())
+
+
+def test_error_code_counts_as_failure_not_baseline(tmp_path):
+    db, n = make_db(tmp_path), FakeNotifier()
+    src = BybitAnnouncements(FakeHttp({"retCode": 10006, "retMsg": "Too many visits"}))
+    assert run(check_announcements([src], db, n, 0)) == []
+    assert db.get_kv("lp_seen") == {"ids": [], "sources": []}  # базовая выборка не сделана
+    assert len(audits(db, "launchpool_error")) == 1
 
 
 def test_first_fetch_failure_keeps_first_run_protection(tmp_path):

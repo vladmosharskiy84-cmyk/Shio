@@ -24,6 +24,10 @@ class Announcement:
     published_ms: int
 
 
+class AnnouncementError(Exception):
+    """Биржа ответила кодом ошибки — это неудачный запрос, а не пустой список."""
+
+
 class AnnouncementSource(Protocol):
     async def fetch(self) -> list[Announcement]: ...
 
@@ -57,6 +61,16 @@ def _items(x) -> list:
     return x if isinstance(x, list) else []
 
 
+def _check_code(exchange: str, data, field: str) -> dict:
+    """Ответ биржи с кодом успеха "0"; иначе AnnouncementError."""
+    data = _dict(data)
+    code = data.get(field)
+    if code is None or str(code) != "0":
+        msg = data.get("retMsg") or data.get("msg") or ""
+        raise AnnouncementError(f"{exchange}: код ответа {code!r} {msg}".strip())
+    return data
+
+
 def _parse(exchange: str, raw, ts_field: str) -> Announcement | None:
     raw = _dict(raw)
     title, url = raw.get("title"), raw.get("url")
@@ -76,7 +90,7 @@ class BybitAnnouncements:
         self.http = http
 
     async def fetch(self) -> list[Announcement]:
-        data = _dict(await self.http.get_json(BYBIT_URL))
+        data = _check_code("bybit", await self.http.get_json(BYBIT_URL), "retCode")
         rows = _items(_dict(data.get("result")).get("list"))
         return [a for a in (_parse("bybit", r, "publishTime") for r in rows) if a]
 
@@ -88,7 +102,7 @@ class OkxAnnouncements:
         self.http = http
 
     async def fetch(self) -> list[Announcement]:
-        data = _dict(await self.http.get_json(OKX_URL))
+        data = _check_code("okx", await self.http.get_json(OKX_URL), "code")
         out = []
         for block in _items(data.get("data")):
             for r in _items(_dict(block).get("details")):
