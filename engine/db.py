@@ -180,11 +180,13 @@ class Db:
                 "UPDATE commands SET status=?, result=? WHERE id=?", (status, result, command_id))
 
     # --- funding ---
-    def add_funding(self, leg_id: int, ts: int, rate: float, amount: float) -> None:
+    def add_funding(self, leg_id: int, ts: int, rate: float, amount: float) -> bool:
+        """True, если выплата записана; False, если (leg_id, ts) уже была."""
         with self.conn:
-            self.conn.execute(
+            cur = self.conn.execute(
                 "INSERT OR IGNORE INTO funding_payments (leg_id, ts, rate, amount) VALUES (?,?,?,?)",
                 (leg_id, ts, rate, amount))
+        return cur.rowcount == 1
 
     def funding_total(self, since_ms: int | None = None) -> float:
         row = self.conn.execute(
