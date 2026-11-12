@@ -1,6 +1,7 @@
 """Настройки движка: загрузка и проверка config.yaml."""
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field, fields
 from typing import Literal
 
@@ -84,6 +85,8 @@ class Settings:
 def _num(value, label: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ConfigError(f"{label}: ожидается число, получено {value!r}")
+    if not math.isfinite(value):
+        raise ConfigError(f"{label}: ожидается конечное число, получено {value!r}")
     return value
 
 

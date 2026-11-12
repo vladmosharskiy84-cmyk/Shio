@@ -120,3 +120,17 @@ def test_interval_below_minute_rejected(tmp_path, section, key):
 def test_default_config_telegram_disabled():
     s = load_settings(str(ROOT / "config.yaml"))
     assert s.telegram.enabled is False and s.telegram.dedupe_s == 600
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+@pytest.mark.parametrize("where", ["capital", "limit", "taker"])
+def test_rejects_non_finite_numbers(tmp_path, value, where):
+    def m(c):
+        if where == "capital":
+            c["capital_usd"] = value
+        elif where == "limit":
+            c["engine"]["limits"]["max_pair_share"] = value
+        else:
+            c["exchanges"]["bybit"]["perp_taker"] = value
+    with pytest.raises(ConfigError, match="конечное число"):
+        load_settings(write(tmp_path, m))
