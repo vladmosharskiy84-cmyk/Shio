@@ -82,6 +82,10 @@ def cfg():
     with open("config.yaml", encoding="utf-8") as f:
         c = yaml.safe_load(f)
     c["min_net_apr"] = 0
+    # тест сканера не зависит от списка наблюдаемых бирж движка
+    legacy = {"binance", "bybit", "okx", "whitebit"}
+    for name, ec in c["exchanges"].items():
+        ec["enabled"] = name in legacy
     return c
 
 

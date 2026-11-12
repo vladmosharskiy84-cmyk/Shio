@@ -18,25 +18,77 @@ top_n: 15                 # сколько строк показывать в к
 
 # Комиссии taker в долях (0.001 = 0.1%). Это базовый уровень (VIP0) —
 # ПРОВЕРЬТЕ в своём аккаунте: скидки за BNB/OKB/объём сильно меняют результат.
+# enabled — наблюдать за биржей (его читает старый сканер; для движка это watch).
+# trade   — разрешено торговать на бирже (только у bybit, okx, hyperliquid).
 exchanges:
-  binance:
-    enabled: true
-    spot_taker: 0.0010
-    perp_taker: 0.0005
   bybit:
     enabled: true
+    trade: true
     spot_taker: 0.0010
     perp_taker: 0.00055
   okx:
     enabled: true
+    trade: true
     spot_taker: 0.0010
+    perp_taker: 0.0005
+  hyperliquid:
+    enabled: true
+    trade: true
+    spot_taker: 0.0
+    perp_taker: 0.00045
+  binance:
+    enabled: true
+    trade: false
+    spot_taker: 0.0010
+    perp_taker: 0.0005
+  bitget:
+    enabled: true
+    trade: false
+    spot_taker: 0.0010
+    perp_taker: 0.0006
+  gate:
+    enabled: true
+    trade: false
+    spot_taker: 0.0020
     perp_taker: 0.0005
   whitebit:
     enabled: true
+    trade: false
     spot_taker: 0.0010
     perp_taker: 0.00055
+  mexc:
+    enabled: true
+    trade: false
+    spot_taker: 0.0005
+    perp_taker: 0.0002
   # Coinbase не отдаёт текущие ставки финансирования через API (ccxt),
   # а бессрочные фьючерсы Coinbase International доступны не во всех странах.
   # Поэтому в сканер funding он не включён.
   coinbase:
     enabled: false
+
+# ====== Движок (engine/) ======
+engine:
+  mode: semi              # semi — каждую сделку подтверждаете вы; auto — бот открывает сам
+  virtual: true           # true — бумажная торговля, реальных ордеров нет
+  aggressive_apr: 80      # порог «агрессивного» профиля, % годовых
+  db_path: data/shio.db
+  collect_interval_s: 60  # как часто собирать данные
+  guard_interval_s: 30    # как часто проверять открытые позиции
+  paper_balances:         # стартовые виртуальные балансы; сумма должна равняться capital_usd
+    bybit: 170
+    okx: 170
+    hyperliquid: 160
+  limits:
+    max_leverage: 3          # плечо, 1–10
+    max_pair_share: 0.5      # доля капитала на одну связку
+    max_positions: 3         # связок одновременно
+    aggressive_share: 0.3    # доля капитала под агрессивный профиль
+    min_auto_apr: 20         # мин. доходность для автомата, % годовых
+    daily_loss_pause: 0.05   # дневной убыток, после которого пауза
+    warn_buffer: 0.40        # запас до ликвидации: предупреждение
+    act_buffer: 0.20         # запас до ликвидации: довнести маржу или закрыть
+    max_drift: 0.01          # допустимый перекос номиналов ног
+    proposal_ttl_s: 900      # срок действия предложения
+    max_slippage: 0.001      # допустимое проскальзывание
+    leg_retries: 3           # попыток открыть вторую ногу
