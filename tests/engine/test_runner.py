@@ -124,7 +124,8 @@ def test_full_cycle_semi(balances, request, capsys):
         if balances == "default":
             # 250 USD на связку не помещаются в 170 USD на bybit — капитал урезан
             assert prop.capital == pytest.approx(170.0 * 0.98)
-        assert f"python -m engine approve {prop.id}" in env.notifier.texts()
+        assert [(q.id, ttl, hold) for q, ttl, hold in env.notifier.proposals] == [
+            (prop.id, 15, env.settings.hold_days)]
 
         assert main(["--config", cfg_path, "approve", str(prop.id)]) == 0
         assert env.db.positions() == []  # CLI только пишет команду
@@ -713,7 +714,33 @@ def test_stop_all_reports_real_outcome(cfg_path, monkeypatch):
         run(env.runner.tick_commands())
     finally:
         run(env.collector.close())
-    text, level = env.notifier.sent[-1]
-    assert level == "alert"
+    text, level = [s for s in env.notifier.sent if s[1] == "alert"][-1]
     assert "закрыто 1 из 2" in text and "ещё закрывается 1" in text
     assert "закрыто 1 из 2" in env.command(cid)["result"]
+
+
+def test_runner_proposal_goes_through_notifier_proposal(cfg_path):
+    env = Env(cfg_path)
+    try:
+        run(env.runner.tick_collect())
+    finally:
+        run(env.collector.close())
+    (prop,) = env.db.pending_proposals(now_ms(env))
+    assert len(env.notifier.proposals) == 1
+    p, ttl_min, hold_days = env.notifier.proposals[0]
+    assert (p.id, ttl_min, hold_days) == (prop.id, 15, env.settings.hold_days)
+    assert "python -m engine approve" not in env.notifier.texts()
+
+
+def test_runner_reports_command_result(cfg_path):
+    env = Env(cfg_path)
+    try:
+        env.db.add_command("pause")
+        run(env.runner.tick_commands())
+        env.db.add_command("approve", "999")
+        run(env.runner.tick_commands())
+    finally:
+        run(env.collector.close())
+    assert ("Команда «pause»: бот на паузе", "info") in env.notifier.sent
+    texts = [(t, lvl) for t, lvl in env.notifier.sent if t.startswith("Команда «approve»")]
+    assert texts == [("Команда «approve»: предложение #999 не найдено", "warn")]

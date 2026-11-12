@@ -87,9 +87,13 @@ class FakeNotifier:
 
     def __init__(self):
         self.sent: list[tuple[str, str]] = []
+        self.proposals: list[tuple] = []  # (Proposal, ttl_min, hold_days)
 
     async def send(self, text: str, level: str = "info") -> None:
         self.sent.append((text, level))
+
+    async def proposal(self, p, ttl_min: int, hold_days: float) -> None:
+        self.proposals.append((p, ttl_min, hold_days))
 
     def texts(self) -> str:
         return "\n".join(t for t, _ in self.sent)

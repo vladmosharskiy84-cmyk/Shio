@@ -244,13 +244,7 @@ class Runner:
         self.db.save_proposal(p)
         self.db.audit("proposal", {"id": p.id, "base": p.base, "kind": p.kind,
                                    "capital": p.capital, "apr": p.expected_apr})
-        legs = ", ".join(f"{l['side']} {l['kind']} на {l['exchange']}" for l in c.legs_plan)
-        profile = "агрессивный" if c.profile == "aggressive" else "спокойный"
-        await self.notifier.send(
-            f"Предложение #{p.id}: связка {p.kind} {p.base} ({legs}), профиль {profile}, "
-            f"капитал {p.capital:.2f} USD, ожидаемая доходность {p.expected_apr:.1f}% годовых "
-            f"(~{p.expected_profit:.2f} USD за {self.settings.hold_days:g} дн.). "
-            f"Подтвердить: python -m engine approve {p.id} — действует {ttl // 60} мин.", "info")
+        await self.notifier.proposal(p, ttl // 60, self.settings.hold_days)
 
     async def _expire(self, now: int) -> None:
         for pid in self.db.expire_proposals(now):
@@ -294,14 +288,20 @@ class Runner:
             except CommandError as exc:
                 self.db.finish_command(cmd.id, "error", str(exc))
                 log.warning("Команда %s %s отклонена: %s", cmd.type, cmd.arg or "", exc)
+                await self._report_command(cmd, str(exc), "warn")
             except Exception as exc:  # noqa: BLE001 — сбой одной команды не мешает остальным
                 self.db.finish_command(cmd.id, "error", f"ошибка: {exc!r}")
                 self.db.audit("command_error", {"id": cmd.id, "type": cmd.type,
                                                 "error": repr(exc)})
                 log.exception("Команда %s %s завершилась ошибкой", cmd.type, cmd.arg or "")
+                await self._report_command(cmd, f"ошибка: {exc!r}", "warn")
             else:
                 self.db.finish_command(cmd.id, "done", result)
                 log.info("Команда %s %s: %s", cmd.type, cmd.arg or "", result)
+                await self._report_command(cmd, result, "info")
+
+    async def _report_command(self, cmd: Command, result: str, level: str) -> None:
+        await self.notifier.send(f"Команда «{cmd.type}»: {result}", level)
 
     async def _execute(self, cmd: Command, now: int) -> str:
         handler = {"approve": self._approve, "reject": self._reject, "close": self._close,
