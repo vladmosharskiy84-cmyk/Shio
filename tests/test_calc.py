@@ -129,3 +129,25 @@ def test_margin_buffer_long_side():
     assert margin_buffer(100, 100, liq) == pytest.approx(1.0)
     assert margin_buffer(100, 80.0, liq) == pytest.approx((liq - 80.0) / (liq - 100), abs=1e-9)
     assert margin_buffer(100, 60.0, liq) == 0.0
+
+
+def test_estimate_fill_full_fill_is_exact_despite_float_error():
+    # float-сумма уровней даёт 1.2999999999999998; полное исполнение должно вернуть notional ровно
+    levels = [[0.1, 1], [0.1, 1], [1.1, 1]]
+    avg, filled_usd, _ = estimate_fill(levels, 1.3)
+    assert filled_usd == 1.3
+    assert avg == pytest.approx(1.3 / 3)
+
+
+def test_estimate_fill_thin_book_across_two_levels():
+    # уровень 1: $100 (1 BTC), уровень 2: $50.5 (0.5 BTC), остаток $49.5 не заполнен
+    avg, filled_usd, slip = estimate_fill([[100, 1], [101, 0.5]], 200)
+    assert filled_usd == pytest.approx(150.5, abs=1e-9)
+    assert avg == pytest.approx(100.3333, abs=1e-4)
+    assert slip == pytest.approx(0.003333, abs=1e-6)
+
+
+def test_estimate_fill_zero_price_first_level_skipped():
+    avg, filled_usd, slip = estimate_fill([[0, 1], [1, 1]], 0.5)
+    assert (avg, filled_usd, slip) == pytest.approx((1.0, 0.5, 0.0))
+    assert estimate_fill([[0, 1]], 0.5) == (0.0, 0.0, 0.0)
