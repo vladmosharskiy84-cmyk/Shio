@@ -288,3 +288,14 @@ def test_compose_config_valid(tmp_path):
                               or "unknown command" in r.stderr):
         pytest.skip("нет плагина docker compose")
     assert r.returncode == 0, r.stderr
+
+
+def test_install_guide_final_review_points():
+    guide = _read("docs/INSTALL.md")
+    for text in ("## 0. Перед началом", "sudo rm /etc/ssh/sshd_config.d/00-shio.conf",
+                 "НЕ делайте шаг 2.5", "Enter passphrase for key", "id -u shio",
+                 "docker ps", "sudo apt install -y git", "ls /var/run/reboot-required",
+                 "Telegram Desktop", "(unhealthy)", "Движок завис N с — перезапуск",
+                 "DigitalOcean, Vultr или Netcup"):
+        assert text in guide, text
+    assert guide.index("sudo apt install -y git") < guide.index("git clone")
