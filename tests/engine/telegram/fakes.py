@@ -4,9 +4,16 @@ from __future__ import annotations
 from engine.telegram.api import Button
 
 
+class TelegramBadRequest(Exception):
+    """Как одноимённая ошибка aiogram: Telegram отверг запрос (повтор не поможет)."""
+
+
 class FakeTelegramApi:
-    def __init__(self, fail_times: int = 0):
+    """fail_times первых вызовов падают; error — фабрика исключения (по умолчанию сетевая)."""
+
+    def __init__(self, fail_times: int = 0, error=None):
         self.fail_times = fail_times
+        self.error = error or (lambda: ConnectionError("telegram недоступен"))
         self.attempts = 0
         self.messages: list[dict] = []
         self.documents: list[dict] = []
@@ -18,7 +25,7 @@ class FakeTelegramApi:
         self.attempts += 1
         if self.fail_times > 0:
             self.fail_times -= 1
-            raise ConnectionError("telegram недоступен")
+            raise self.error()
 
     async def send_message(self, chat_id: int, text: str,
                            buttons: list[list[Button]] | None = None) -> int:

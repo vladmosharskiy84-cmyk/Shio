@@ -9,9 +9,10 @@ from engine.db import Db
 from engine.models import Proposal
 from engine.telegram.api import Button
 from engine.telegram.notifier import TelegramNotifier
-from tests.engine.telegram.fakes import FakeTelegramApi
+from tests.engine.telegram.fakes import FakeTelegramApi, TelegramBadRequest
 
 CHAT = 42
+FAR = 10 ** 13  # срок предложения далеко в будущем (мс)
 
 
 _MADE: list = []  # нотификаторы теста: run() дожидается их очередей
@@ -84,12 +85,26 @@ def test_dedupe_same_text_within_window(tmp_path):
     assert len(api.messages) == 3
 
 
-def test_retries_then_gives_up_without_raising(tmp_path):
-    n, api, db, _ = make(tmp_path, api=FakeTelegramApi(fail_times=5))
+def bad_request():
+    return TelegramBadRequest("Bad Request: message is too long")
+
+
+def test_permanent_error_dropped_without_retries(tmp_path):
+    n, api, db, _ = make(tmp_path, api=FakeTelegramApi(fail_times=1, error=bad_request),
+                         breaker_s=60)
     run(n.send("x", "alert"))
-    assert api.attempts == 3 and api.messages == []
+    assert api.attempts == 1 and api.messages == []  # повтор не поможет — не повторяем
     assert len(audits(db, "telegram_error")) == 1
     assert len(audits(db, "notify")) == 1
+    run(n.send("y", "alert"))  # постоянная ошибка не включает паузу доставки
+    assert [m["text"] for m in api.messages] == ["🚨 y"]
+
+
+def test_transient_failures_keep_alert_queued(tmp_path):
+    n, api, db, _ = make(tmp_path, api=FakeTelegramApi(fail_times=5))
+    run(n.send("x", "alert"))
+    assert api.attempts == 6 and [m["text"] for m in api.messages] == ["🚨 x"]
+    assert len(audits(db, "telegram_error")) == 1  # одна запись на сбой, а не на каждый круг
 
 
 def test_recovers_after_one_failure(tmp_path):
@@ -100,7 +115,7 @@ def test_recovers_after_one_failure(tmp_path):
 
 
 def test_failed_send_is_not_deduped(tmp_path):
-    n, api, _, _ = make(tmp_path, api=FakeTelegramApi(fail_times=3))
+    n, api, _, _ = make(tmp_path, api=FakeTelegramApi(fail_times=1, error=bad_request))
     run(n.send("x", "alert"))
     run(n.send("x", "alert"))
     assert len(api.messages) == 1
@@ -108,7 +123,7 @@ def test_failed_send_is_not_deduped(tmp_path):
 
 def test_proposal_has_buttons_and_stores_message_id(tmp_path):
     n, api, db, _ = make(tmp_path)
-    p = Proposal(7, 0, 900_000, "HOT", "perp_perp", "calm", [], 100.0, 50.0, 1.0, "pending")
+    p = Proposal(7, 0, FAR, "HOT", "perp_perp", "calm", [], 100.0, 50.0, 1.0, "pending")
     run(n.proposal(p, 15, 3.0))
     m = api.messages[0]
     assert "#7" in m["text"] and "HOT" in m["text"] and "python -m engine" not in m["text"]
@@ -117,16 +132,18 @@ def test_proposal_has_buttons_and_stores_message_id(tmp_path):
 
 
 def test_proposal_failure_does_not_raise(tmp_path):
-    n, api, db, _ = make(tmp_path, api=FakeTelegramApi(fail_times=9))
-    p = Proposal(7, 0, 900_000, "HOT", "perp_perp", "calm", [], 100.0, 50.0, 1.0, "pending")
+    n, api, db, _ = make(tmp_path, api=FakeTelegramApi(fail_times=9, error=bad_request))
+    p = Proposal(7, 0, FAR, "HOT", "perp_perp", "calm", [], 100.0, 50.0, 1.0, "pending")
     run(n.proposal(p, 15, 3.0))
     assert db.get_kv("tg_msg:proposal:7") is None
     assert len(audits(db, "telegram_error")) == 1
 
 
-def test_send_document_retries_and_never_raises(tmp_path):
+def test_send_document_one_try_per_call_then_succeeds(tmp_path):
     n, api, db, _ = make(tmp_path, api=FakeTelegramApi(fail_times=1))
+    assert run(n.send_document("b.bin", b"data", "копия")) is False  # Runner повторит позже
     assert run(n.send_document("b.bin", b"data", "копия")) is True
+    assert api.attempts == 2
     assert api.documents == [{"chat_id": CHAT, "filename": "b.bin", "data": b"data",
                               "caption": "копия"}]
 
@@ -134,7 +151,7 @@ def test_send_document_retries_and_never_raises(tmp_path):
 def test_send_document_gives_up_without_raising(tmp_path):
     n, api, db, _ = make(tmp_path, api=FakeTelegramApi(fail_times=9))
     assert run(n.send_document("b.bin", b"data", "копия")) is False
-    assert api.attempts == 3 and api.documents == []
+    assert api.attempts == 1 and api.documents == []
     assert len(audits(db, "telegram_error")) == 1
     assert (n.backup_dir / "b.bin").read_bytes() == b"data"  # запасная копия на диске
 
@@ -178,7 +195,7 @@ def test_send_returns_immediately_when_telegram_hangs(tmp_path):
         t0 = time.monotonic()
         for i in range(5):
             await asyncio.wait_for(n.send(f"тревога {i}", "alert"), 0.5)
-        p = Proposal(7, 0, 900_000, "HOT", "perp_perp", "calm", [], 100.0, 50.0, 1.0, "pending")
+        p = Proposal(7, 0, FAR, "HOT", "perp_perp", "calm", [], 100.0, 50.0, 1.0, "pending")
         await asyncio.wait_for(n.proposal(p, 15, 3.0), 0.5)
         elapsed = time.monotonic() - t0
         await asyncio.sleep(0.05)  # разборщик очереди успел начать «висящий» вызов
@@ -272,11 +289,11 @@ def test_breaker_pauses_delivery_after_failure(tmp_path):
         return during
 
     during = run(go())
-    assert during == (3, 0)  # «a» исчерпал повторы, «b» ждёт окончания паузы
-    assert [m["text"] for m in api.messages] == ["🚨 b"]
+    assert during == (3, 0)  # «a» исчерпал повторы, вся очередь ждёт окончания паузы
+    assert [m["text"] for m in api.messages] == ["🚨 a", "🚨 b"]  # «a» не потерян
 
 
-class RetryAfter(Exception):
+class TelegramRetryAfter(Exception):  # имя как у aiogram
     def __init__(self, retry_after):
         super().__init__(f"Flood control exceeded. Retry in {retry_after} seconds")
         self.retry_after = retry_after
@@ -288,7 +305,7 @@ def test_retry_after_respected_and_capped(tmp_path, retry_after, expected):
         async def send_message(self, chat_id, text, buttons=None):
             if self.attempts == 0:
                 self.attempts += 1
-                raise RetryAfter(retry_after)
+                raise TelegramRetryAfter(retry_after)
             return await super().send_message(chat_id, text, buttons)
 
     n, api, _, _ = make(tmp_path, api=Flood())
@@ -316,8 +333,11 @@ def test_token_redacted_from_errors(tmp_path, caplog):
     class Leaky(FakeTelegramApi):
         async def send_message(self, chat_id, text, buttons=None):
             self.attempts += 1
-            raise ConnectionError(
-                "Cannot connect to https://api.telegram.org/bot123456:AAH-x_yZ/sendMessage")
+            if self.attempts == 1:  # сетевой сбой: в журнал
+                raise ConnectionError(
+                    "Cannot connect to https://api.telegram.org/bot123456:AAH-x_yZ/sendMessage")
+            raise TelegramBadRequest(  # отказ: в журнал и audit
+                "Bad Request at https://api.telegram.org/bot123456:AAH-x_yZ/sendMessage")
 
     n, api, db, _ = make(tmp_path, api=Leaky())
     with caplog.at_level(logging.ERROR):
@@ -330,7 +350,7 @@ def test_token_redacted_from_errors(tmp_path, caplog):
 
 def test_proposal_written_to_python_log(tmp_path, caplog):
     n, api, _, _ = make(tmp_path)
-    p = Proposal(7, 0, 900_000, "HOT", "perp_perp", "calm", [], 100.0, 50.0, 1.0, "pending")
+    p = Proposal(7, 0, FAR, "HOT", "perp_perp", "calm", [], 100.0, 50.0, 1.0, "pending")
     with caplog.at_level(logging.INFO):
         run(n.proposal(p, 15, 3.0))
     assert any("Предложение #7" in r.getMessage() for r in caplog.records)
@@ -375,4 +395,187 @@ def test_aclose_closes_api_and_logs_undelivered(tmp_path, caplog):
         run(go())
     assert api.closed
     assert any("Не доставлено" in r.getMessage() and "b" in r.getMessage()
+               for r in caplog.records)
+
+
+def test_error_classification_with_aiogram_exceptions():
+    import aiogram.exceptions as ae
+    from aiogram.methods import SendMessage
+
+    from engine.telegram.notifier import is_transient
+
+    m = SendMessage(chat_id=1, text="x")
+    for exc in (ae.TelegramNetworkError(m, "x"), ae.TelegramServerError(m, "x"),
+                ae.RestartingTelegram(m, "x"), ae.TelegramRetryAfter(m, "x", 5),
+                asyncio.TimeoutError(), ConnectionResetError(), OSError("x")):
+        assert is_transient(exc), exc
+    for exc in (ae.TelegramBadRequest(m, "x"), ae.TelegramForbiddenError(m, "x"),
+                ae.TelegramNotFound(m, "x"), ae.TelegramUnauthorizedError(m, "x"),
+                ae.TelegramEntityTooLarge(m, "x"), ValueError("x"), KeyError("x")):
+        assert not is_transient(exc), exc
+    import aiohttp
+    assert is_transient(aiohttp.ClientConnectionError("x"))
+
+
+def test_outage_then_recovery_delivers_queued_alert_after_breaker(tmp_path):
+    n, api, db, _ = make(tmp_path, api=FakeTelegramApi(fail_times=4), breaker_s=0.2)
+    _MADE.clear()
+
+    async def go():
+        await n.send("тревога", "alert")
+        await asyncio.sleep(0.1)
+        during = (api.attempts, len(api.messages))  # 3 попытки и пауза
+        assert await n.flush(timeout=3)
+        return during
+
+    assert run(go()) == (3, 0)
+    assert [m["text"] for m in api.messages] == ["🚨 тревога"]
+    assert audits(db, "telegram_dropped") == []
+
+
+def test_items_too_old_are_dropped(tmp_path, caplog):
+    class Down(FakeTelegramApi):
+        up = False
+
+        async def send_message(self, chat_id, text, buttons=None):
+            self.attempts += 1
+            if not self.up:
+                raise ConnectionError("нет сети")
+            return await super().send_message(chat_id, text, buttons)
+
+    n, api, db, clock = make(tmp_path, api=Down(), breaker_s=0.01)
+    _MADE.clear()
+
+    async def go():
+        await n.send("инфо", "info")
+        await n.send("тревога", "alert")
+        await asyncio.sleep(0.05)
+        clock.t += 2 * 3600       # info старше часа — выбрасывается, тревога ещё ждёт
+        await asyncio.sleep(0.1)
+        left_after_2h = [it.text for it in n._items] + ([n._current.text] if n._current else [])
+        clock.t += 11 * 3600      # тревоге 13 ч — тоже выбрасывается
+        assert await n.flush(timeout=2)
+        api.up = True
+        return left_after_2h
+
+    with caplog.at_level(logging.WARNING):
+        left = run(go())
+    assert left == ["🚨 тревога"]
+    assert api.messages == []
+    assert len(audits(db, "telegram_dropped")) == 2
+    assert any("устарело" in r.getMessage() for r in caplog.records)
+
+
+def test_multipart_resumes_from_first_undelivered_part(tmp_path):
+    class FailSecond(FakeTelegramApi):
+        async def send_message(self, chat_id, text, buttons=None):
+            if self.attempts == 1:  # вторая отправка (вторая часть) — сетевой сбой
+                self.attempts += 1
+                raise ConnectionError("обрыв")
+            return await super().send_message(chat_id, text, buttons)
+
+    n, api, _, _ = make(tmp_path, api=FailSecond(), retries=1)
+    text = "\n".join(f"строка {i} " + "x" * 90 for i in range(100))
+    run(n.send(text, "info"))
+    assert "\n".join(m["text"] for m in api.messages) == text  # без повторов первой части
+
+
+def test_alert_goes_before_queued_document(tmp_path):
+    n, api, _, _ = make(tmp_path)
+    order = []
+    orig_msg, orig_doc = api.send_message, api.send_document
+
+    async def msg(chat_id, text, buttons=None):
+        order.append("msg")
+        return await orig_msg(chat_id, text, buttons)
+
+    async def doc(chat_id, filename, data, caption):
+        order.append("doc")
+        await orig_doc(chat_id, filename, data, caption)
+
+    api.send_message, api.send_document = msg, doc
+
+    async def go():
+        task = asyncio.ensure_future(n.send_document("b.bin", b"x", "копия"))
+        await asyncio.sleep(0)  # файл уже в очереди, разборщик ещё не начал
+        await n.send("тревога", "alert")
+        return await task
+
+    assert run(go()) is True
+    assert order == ["msg", "doc"]
+
+
+def test_overflow_order_info_then_proposals_then_alerts(tmp_path):
+    n, api, _, clock = make(tmp_path, queue_max=3)
+
+    def prop(pid):
+        return Proposal(pid, 0, int(clock.t * 1000) + 900_000, "HOT", "perp_perp", "calm", [],
+                        100.0, 50.0, 1.0, "pending")
+
+    async def go():
+        await n.proposal(prop(1), 15, 3.0)
+        await n.send("i", "info")
+        await n.send("A", "alert")
+        await n.send("B", "alert")         # выброшено обычное info «i», предложение остаётся
+        assert await n.flush(timeout=2)
+        await n.proposal(prop(2), 15, 3.0)
+        await n.send("C", "alert")
+        await n.send("D", "alert")
+        await n.send("E", "alert")         # обычных info нет — выброшено предложение #2
+        await n.send("F", "alert")         # остались только тревоги — выброшена «C»
+
+    run(go())
+    texts = [m["text"] for m in api.messages]
+    assert texts[0].startswith("Предложение #1")
+    assert texts[1:] == ["🚨 A", "🚨 B", "🚨 D", "🚨 E", "🚨 F"]
+
+
+def test_expired_proposal_skipped(tmp_path, caplog):
+    n, api, db, clock = make(tmp_path)
+    p = Proposal(7, 0, int(clock.t * 1000) + 900_000, "HOT", "perp_perp", "calm", [], 100.0,
+                 50.0, 1.0, "pending")
+
+    async def go():
+        await n.proposal(p, 15, 3.0)
+        clock.t += 16 * 60  # пока лежало в очереди — истекло
+
+    with caplog.at_level(logging.INFO):
+        run(go())
+    assert api.messages == []
+    assert db.get_kv("tg_msg:proposal:7") is None
+    assert any("истекло" in r.getMessage() and "#7" in r.getMessage() for r in caplog.records)
+
+
+def test_document_bytes_freed_and_old_entries_pruned(tmp_path):
+    class Slow(FakeTelegramApi):
+        async def send_document(self, chat_id, filename, data, caption):
+            await asyncio.sleep(0.1)
+            await super().send_document(chat_id, filename, data, caption)
+
+    n, api, _, clock = make(tmp_path, api=Slow(), document_wait_s=0.01)
+
+    async def go():
+        assert await n.send_document("b.bin", b"data", "копия") is False
+        await asyncio.sleep(0.2)
+        freed = n._documents["b.bin"].data
+        clock.t += 2 * 86400
+        await n.send_document("c.bin", b"data", "копия")
+        return freed
+
+    assert run(go()) == b""
+    assert "b.bin" not in n._documents
+
+
+def test_cancel_logs_undelivered_message(tmp_path, caplog):
+    n, api, _, _ = make(tmp_path, api=HangingApi())
+    _MADE.clear()
+
+    async def go():
+        await n.send("важное сообщение", "alert")
+        await asyncio.sleep(0.05)  # разборщик взял его и «висит»
+        await n.aclose(timeout=0.1)
+
+    with caplog.at_level(logging.WARNING):
+        run(go())
+    assert any("Не доставлено" in r.getMessage() and "важное сообщение" in r.getMessage()
                for r in caplog.records)
