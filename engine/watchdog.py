@@ -6,7 +6,7 @@ import logging
 import os
 import time
 from collections.abc import Awaitable, Callable
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 log = logging.getLogger(__name__)
 
@@ -36,19 +36,24 @@ class HealthPinger:
         async with self._session.get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
             return resp.status
 
-    def _host(self) -> str:
+    @property
+    def host(self) -> str:
         return urlsplit(self.url or "").hostname or "?"
+
+    def _fail_url(self) -> str:
+        parts = urlsplit(self.url)
+        return urlunsplit(parts._replace(path=parts.path.rstrip("/") + "/fail"))
 
     def _warn(self, reason: str) -> None:
         now = time.monotonic()
         if now - self._last_log >= LOG_EVERY_S:
             self._last_log = now
-            log.warning("Сторож (%s): пинг не удался: %s", self._host(), reason)
+            log.warning("Сторож (%s): пинг не удался: %s", self.host, reason)
 
     async def ping(self, fail: bool = False) -> bool:
         if not self.url:
             return False
-        target = self.url + "/fail" if fail else self.url
+        target = self._fail_url() if fail else self.url
         try:
             status = await asyncio.wait_for(self._http_get(target, self.timeout_s),
                                             self.timeout_s)

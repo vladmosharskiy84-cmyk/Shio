@@ -25,6 +25,7 @@ HEARTBEAT_INTERVAL_S = 60
 DAILY_INTERVAL_S = 60
 DAILY_RETRY_S = 20 * 60  # повтор сводки/копии после сбоя
 RECONCILE_INTERVAL_S = 600
+PING_TIMEOUT_S = 10  # потолок на пинг сторожа внутри тика heartbeat
 _LOG_SKIPS = 5  # сколько причин пропуска лучших кандидатов писать в журнал за тик
 
 _HELD = {"opening", "open", "closing"}
@@ -81,7 +82,6 @@ class Runner:
         log.info("Движок запущен: режим %s, %s торговля",
                  "автомат" if self.settings.mode == "auto" else "полуавтомат",
                  "виртуальная" if self.settings.virtual else "реальная")
-        self._stopping = False
         try:
             lost = self.db.fail_taken_commands("бот перезапущен")
         except Exception:  # noqa: BLE001
@@ -215,7 +215,7 @@ class Runner:
         self.db.heartbeat(self.now_ms())
         if self.pinger is not None:
             try:
-                await asyncio.wait_for(self.pinger.ping(), 10)
+                await asyncio.wait_for(self.pinger.ping(), PING_TIMEOUT_S)
             except Exception as exc:  # noqa: BLE001 — сторож не должен ломать цикл
                 log.warning("Сторож: пинг не выполнен (%s)", type(exc).__name__)
 

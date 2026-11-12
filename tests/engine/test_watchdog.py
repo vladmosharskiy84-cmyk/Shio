@@ -73,3 +73,9 @@ def test_from_env_strips(monkeypatch):
     assert HealthPinger.from_env().url is None
     monkeypatch.delenv("SHIO_HEALTHCHECK_URL")
     assert HealthPinger.from_env().url is None
+
+
+def test_fail_suffix_keeps_query():
+    http = FakeHttp(200)
+    run(HealthPinger("https://hc-ping.com/uuid?rid=5", http).ping(fail=True))
+    assert http.calls == ["https://hc-ping.com/uuid/fail?rid=5"]

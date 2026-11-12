@@ -1005,11 +1005,15 @@ def test_heartbeat_pings_after_db_write(cfg_path):
     assert env.runner.pinger.seen == [int(T0 * 1000)]
 
 
-def test_heartbeat_pinger_exception_isolated(cfg_path):
+def test_heartbeat_pinger_exception_isolated(cfg_path, caplog):
     env = Env(cfg_path)
-    env.runner.pinger = RecordingPinger(env, exc=RuntimeError("x"))
-    run(env.runner.step())
+    env.runner.pinger = RecordingPinger(env, exc=RuntimeError("boom-secret"))
+    with caplog.at_level(logging.WARNING):
+        run(env.runner.step())
     assert env.db.get_kv("heartbeat") == int(T0 * 1000)
+    assert env.audits("tick_error") == []
+    assert "Сторож" in caplog.text
+    assert "RuntimeError" in caplog.text and "boom-secret" not in caplog.text
 
 
 def test_stop_waits_for_current_step(cfg_path):
@@ -1030,8 +1034,17 @@ def test_stop_waits_for_current_step(cfg_path):
     async def scenario():
         await asyncio.wait_for(env.runner.run_forever(), 5)
 
+    steps = []
+    orig_step = env.runner.step
+
+    async def counting_step():
+        steps.append(1)
+        await orig_step()
+
+    env.runner.step = counting_step
     run(scenario())
     assert done == [1]
+    assert steps == [1]  # второй шаг не запускался
     assert env.db.get_kv("heartbeat") == int(T0 * 1000)  # остальные задачи шага выполнены
 
 
@@ -1055,3 +1068,60 @@ def test_setup_logging_idempotent(cfg_path):
             if h not in before:
                 root.removeHandler(h)
                 h.close()
+
+
+def test_heartbeat_hanging_pinger_bounded(cfg_path, monkeypatch):
+    import time
+    import engine.runner as runner_mod
+
+    class Hanging:
+        async def ping(self, fail=False):
+            await asyncio.sleep(60)
+
+    monkeypatch.setattr(runner_mod, "PING_TIMEOUT_S", 0.1)
+    env = Env(cfg_path)
+    env.runner.pinger = Hanging()
+    start = time.monotonic()
+    run(env.runner.tick_heartbeat())
+    assert time.monotonic() - start < 2
+    assert env.db.get_kv("heartbeat") == int(T0 * 1000)
+
+
+def test_install_signal_handlers_stop_once(caplog):
+    from engine.__main__ import _install_signal_handlers
+
+    class FakeRunner:
+        stops = 0
+
+        def stop(self):
+            self.stops += 1
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        captured = {}
+        loop.add_signal_handler = lambda sig, cb, *a: captured.__setitem__(sig, (cb, a))
+        r = FakeRunner()
+        _install_signal_handlers(r)
+        import signal
+        assert set(captured) == {signal.SIGTERM, signal.SIGINT}
+        cb, a = captured[signal.SIGTERM]
+        cb(*a)
+        cb2, a2 = captured[signal.SIGINT]
+        with caplog.at_level(logging.WARNING):
+            cb2(*a2)
+        return r
+
+    r = run(scenario())
+    assert r.stops == 1
+    assert "Повторный сигнал" in caplog.text
+
+
+def test_log_pinger(caplog):
+    from engine.__main__ import _log_pinger
+    from engine.watchdog import HealthPinger
+
+    with caplog.at_level(logging.INFO, logger="engine"):
+        _log_pinger(HealthPinger(None))
+        _log_pinger(HealthPinger("https://hc-ping.com/secret-uuid"))
+    assert "Сторож не настроен" in caplog.text
+    assert "hc-ping.com" in caplog.text and "secret-uuid" not in caplog.text

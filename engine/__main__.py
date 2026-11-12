@@ -187,6 +187,14 @@ def _build_announcement_sources(settings: Settings, http) -> list:
     return sources
 
 
+def _log_pinger(pinger) -> None:
+    log = logging.getLogger("engine")
+    if pinger.url:
+        log.info("Сторож включён: %s", pinger.host)
+    else:
+        log.info("Сторож не настроен: SHIO_HEALTHCHECK_URL пуст")
+
+
 def _install_signal_handlers(runner) -> None:
     """SIGTERM/SIGINT: дозавершить текущий шаг и выйти; повторный сигнал только пишет в журнал."""
     log = logging.getLogger("engine")
@@ -223,6 +231,7 @@ async def _run(settings: Settings) -> None:
         notifier = None
         http = AiohttpJson()
         pinger = HealthPinger.from_env()
+        _log_pinger(pinger)
         try:
             broker = PaperBroker(collector, settings, db)
             notifier, token = tgbot.build_notifier(settings, db)
