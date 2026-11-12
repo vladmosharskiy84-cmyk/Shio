@@ -6,6 +6,7 @@ from engine.config import load_settings
 from engine.db import Db
 from engine.executor import close_pair, open_pair
 from engine.models import Position
+from engine.broker import Fill
 from tests.engine.fakes import FakeNotifier, ScriptedBroker
 
 PERP = "X/USDT:USDT"
@@ -39,8 +40,14 @@ def do_open(broker, db, settings, notifier=None, capital=1000.0):
 
 
 def test_opens_both_legs_equal_amount(db, settings):
-    broker = ScriptedBroker()
+    stored = {}
+
+    def hook():  # перед вторым ордером первая нога уже в базе
+        stored["amount"] = db.positions()[0].legs[0].amount
+
+    broker = ScriptedBroker(hook=hook, hook_on_call=2)
     pos, _ = do_open(broker, db, settings)
+    assert stored["amount"] == pytest.approx(7.5)
     assert pos.status == "open"
     spot, perp = pos.legs
     # капитал 1000, плечо 3: номинал = 1000 / (1 + 1/3) = 750; цена 100 -> 7.5
@@ -82,9 +89,12 @@ def test_second_leg_fails_three_times_unwinds_first(db, settings):
 
 def test_partial_second_leg_shrinks_first(db, settings):
     # вторая нога: 40% и затем 0 + 0 -> итог 40%; первая сокращается до 3.0
-    broker = ScriptedBroker(script=[1.0, 0.4, 0.0, 0.0])
+    # встречный ордер по первой ноге исполняется по 110 -> P&L цены (110-100)*4.5 = 45
+    shrink = Fill("bybit", SPOT, "sell", 4.5, 4.5, 110.0, 0.0)
+    broker = ScriptedBroker(script=[1.0, 0.4, 0.0, 0.0, shrink])
     pos, _ = do_open(broker, db, settings)
     assert pos.status == "open"
+    assert pos.realized_pnl == pytest.approx(45.0)
     spot, perp = pos.legs
     assert spot.amount == perp.amount == pytest.approx(3.0)
     assert run(broker.open_amounts("bybit")) == {SPOT: pytest.approx(3.0)}
@@ -104,7 +114,7 @@ def test_thin_book_opens_nothing(db, settings):
     assert pos.status == "failed"
     assert len(broker.calls) == 1
     assert run(broker.open_amounts("bybit")) == {} and run(broker.open_amounts("okx")) == {}
-    assert notifier.sent
+    assert "недостаточно ликвидности" in notifier.texts()
 
 
 def test_zero_ref_price_fails_without_orders(db, settings):
@@ -140,3 +150,58 @@ def test_close_pair_failure_keeps_closing_and_alerts(db, settings):
     assert db.get_position(pos.id).status == "closing"
     assert notifier.sent[-1][1] == "alert"
     assert out.legs[1].open
+
+
+def test_incomplete_unwind_keeps_closing(db, settings):
+    broker = ScriptedBroker(script=[1.0, 0, 0, 0, 0, 0, 0])
+    pos, notifier = do_open(broker, db, settings)
+    assert pos.status == "closing"
+    assert pos.legs[0].open and pos.legs[0].amount == pytest.approx(7.5)
+    assert not pos.legs[1].open
+    assert notifier.sent[-1][1] == "alert"
+    assert db.get_position(pos.id).status == "closing"
+
+
+def test_shrink_incomplete_stays_open_with_alert(db, settings):
+    broker = ScriptedBroker(script=[1.0, 0.4, 0, 0, 0, 0, 0])
+    pos, notifier = do_open(broker, db, settings)
+    assert pos.status == "open"
+    assert pos.legs[0].amount == pytest.approx(7.5) and pos.legs[1].amount == pytest.approx(3.0)
+    assert notifier.sent[-1][1] == "alert"
+    assert db.get_position(pos.id).legs[0].amount == pytest.approx(7.5)
+
+
+def test_broker_exception_on_second_leg_unwinds_first(db, settings):
+    err = RuntimeError("сбой биржи")
+    broker = ScriptedBroker(script=[1.0, err, err, err])
+    pos, notifier = do_open(broker, db, settings)
+    assert pos.status == "failed"
+    assert run(broker.open_amounts("bybit")) == {} and run(broker.open_amounts("okx")) == {}
+    assert notifier.sent[-1][1] == "alert" and "закрыта первая нога" in notifier.texts()
+
+
+def test_broker_exception_during_close_keeps_closing(db, settings):
+    broker = ScriptedBroker()
+    pos, notifier = do_open(broker, db, settings)
+    err = RuntimeError("сбой биржи")
+    broker.script = [err, err, err]
+    out = run(close_pair(pos, "тест", broker, db, notifier, settings))
+    assert out.status == "closing" and out.legs[1].open
+    assert notifier.sent[-1][1] == "alert"
+
+
+def test_second_leg_overfill_is_countered(db, settings):
+    over = Fill("okx", PERP, "sell", 7.5, 9.0, 100.0, 0.0)
+    broker = ScriptedBroker(script=[1.0, over])
+    pos, _ = do_open(broker, db, settings)
+    assert pos.status == "open"
+    assert pos.legs[0].amount == pos.legs[1].amount == pytest.approx(7.5)
+    assert run(broker.open_amounts("okx")) == {PERP: pytest.approx(-7.5)}
+
+
+def test_close_marks_empty_open_leg_closed(db, settings):
+    broker = ScriptedBroker()
+    pos, notifier = do_open(broker, db, settings)
+    pos.legs[0].amount = 0.0
+    out = run(close_pair(pos, "тест", broker, db, notifier, settings))
+    assert out.status == "closed" and not out.legs[0].open

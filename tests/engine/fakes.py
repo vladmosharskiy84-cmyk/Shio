@@ -99,16 +99,18 @@ class ScriptedBroker:
     """Брокер с заранее заданными результатами market_ioc (по порядку вызовов).
 
     script: элементы — доля исполнения (float) либо готовый Fill; после исчерпания — 1.0.
-    hook: вызывается перед самым первым market_ioc.
+    Элемент-исключение — market_ioc бросает его.
+    hook: вызывается перед market_ioc с номером hook_on_call (по умолчанию первым).
     """
 
     def __init__(self, script=None, prices: dict | None = None, default_price: float = 100.0,
-                 fee_rate: float = 0.001, hook=None):
+                 fee_rate: float = 0.001, hook=None, hook_on_call: int = 1):
         self.script = list(script or [])
         self.prices = prices or {}
         self.default_price = default_price
         self.fee_rate = fee_rate
         self.hook = hook
+        self.hook_on_call = hook_on_call
         self.calls: list[tuple] = []  # (exchange, symbol, kind, side, amount)
         self.leverages: dict = {}
         self.amounts: dict[str, dict[str, float]] = {}
@@ -117,6 +119,8 @@ class ScriptedBroker:
         return self.prices.get((exchange, symbol), self.default_price)
 
     async def ref_price(self, exchange, symbol, side):
+        if isinstance(self.prices.get("ref_error"), Exception):
+            raise self.prices["ref_error"]
         return self._price(exchange, symbol)
 
     async def round_amount(self, exchange, symbol, amount):
@@ -126,10 +130,12 @@ class ScriptedBroker:
         self.leverages[(exchange, symbol)] = leverage
 
     async def market_ioc(self, exchange, symbol, kind, side, amount, max_slippage):
-        if self.hook is not None and not self.calls:
+        if self.hook is not None and len(self.calls) + 1 == self.hook_on_call:
             self.hook()
         self.calls.append((exchange, symbol, kind, side, amount))
         item = self.script.pop(0) if self.script else 1.0
+        if isinstance(item, Exception):
+            raise item
         if isinstance(item, Fill):
             fill = item
         else:
