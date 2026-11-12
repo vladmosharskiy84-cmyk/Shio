@@ -70,6 +70,8 @@ def _parse(exchange: str, raw, ts_field: str) -> Announcement | None:
 
 
 class BybitAnnouncements:
+    exchange = "bybit"
+
     def __init__(self, http):
         self.http = http
 
@@ -80,6 +82,8 @@ class BybitAnnouncements:
 
 
 class OkxAnnouncements:
+    exchange = "okx"
+
     def __init__(self, http):
         self.http = http
 
@@ -99,28 +103,56 @@ def _matches(title: str) -> bool:
     return any(k in low for k in KEYWORDS)
 
 
+ERROR_THROTTLE_MS = 3_600_000
+
+
+def _source_key(src) -> str:
+    return getattr(src, "exchange", None) or type(src).__name__
+
+
 async def check_announcements(sources, db, notifier, now_ms: int) -> list[Announcement]:
-    """Новые подходящие анонсы → уведомление. Первый запуск только запоминает найденное."""
+    """Новые подходящие анонсы → уведомление.
+
+    Каждый источник при первом удачном запросе только запоминает найденное (без уведомлений);
+    «базовые» источники хранятся в kv lp_seen["sources"].
+    """
     state = db.get_kv(SEEN_KEY)
-    first_run = state is None
-    seen: list[str] = list(state.get("ids", [])) if isinstance(state, dict) else []
+    if not isinstance(state, dict):
+        state = {}
+    seen: list[str] = [i for i in state.get("ids", []) if isinstance(i, str)] \
+        if isinstance(state.get("ids"), list) else []
     seen_set = set(seen)
+    baselined: list[str] = [n for n in state.get("sources", []) if isinstance(n, str)] \
+        if isinstance(state.get("sources"), list) else []
     new: list[Announcement] = []
     for src in sources:
+        key = _source_key(src)
         try:
             found = await src.fetch()
         except Exception as exc:  # noqa: BLE001
-            log.warning("Launchpool: источник %s недоступен: %s", type(src).__name__, exc)
-            db.audit("launchpool_error", {"source": type(src).__name__, "error": repr(exc)})
+            _report_error(db, key, exc, now_ms)
             continue
+        notify = key in baselined
         for a in found:
             if _matches(a.title) and a.id not in seen_set:
                 seen_set.add(a.id)
                 seen.append(a.id)
-                new.append(a)
-    db.set_kv(SEEN_KEY, {"ids": seen[-SEEN_LIMIT:]})
-    if first_run:
-        return []
+                if notify:
+                    new.append(a)
+        if not notify:
+            baselined.append(key)
+    db.set_kv(SEEN_KEY, {"ids": seen[-SEEN_LIMIT:], "sources": baselined})
     for a in new:
         await notifier.send(f"Новый пул на {a.exchange}: {a.title}\n{a.url}", "info")
     return new
+
+
+def _report_error(db, key: str, exc: Exception, now_ms: int) -> None:
+    """Предупреждение и audit не чаще раза в час на источник."""
+    kv_key = f"lp_err:{key}"
+    last = db.get_kv(kv_key)
+    if isinstance(last, int) and 0 <= now_ms - last < ERROR_THROTTLE_MS:
+        return
+    db.set_kv(kv_key, now_ms)
+    log.warning("Launchpool: источник %s недоступен: %s", key, exc)
+    db.audit("launchpool_error", {"source": key, "error": repr(exc)})
