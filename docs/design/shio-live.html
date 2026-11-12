@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Shio</title>
+<link href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#06060F;--ink:#F5F7FF;--mute:#9AA0B8;--mint:#3DFFB5;--cyan:#22D3FF;--violet:#7C5CFF;--glass:rgba(255,255,255,.06);--line:rgba(255,255,255,.12)}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font-family:Onest,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+.app{position:relative;width:100%;max-width:430px;min-height:100vh;margin:0 auto;overflow:hidden;padding:22px 20px 120px}
+/* живой фон — «северное сияние» */
+.aurora{position:absolute;inset:-20%;z-index:0;filter:blur(70px);opacity:.75;pointer-events:none}
+.blob{position:absolute;border-radius:50%;mix-blend-mode:screen}
+.b1{width:340px;height:340px;background:var(--violet);left:-60px;top:-40px;animation:m1 9s ease-in-out infinite alternate}
+.b2{width:300px;height:300px;background:var(--cyan);right:-80px;top:120px;animation:m2 11s ease-in-out infinite alternate}
+.b3{width:260px;height:260px;background:#00FFA3;left:40px;top:520px;opacity:.55;animation:m3 13s ease-in-out infinite alternate}
+@keyframes m1{to{transform:translate(120px,80px) scale(1.2)}}
+@keyframes m2{to{transform:translate(-110px,140px) scale(.85)}}
+@keyframes m3{to{transform:translate(90px,-120px) scale(1.25)}}
+.content{position:relative;z-index:1}
+.top{display:flex;justify-content:space-between;align-items:center}
+.brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:22px;letter-spacing:-.5px}
+.pill{display:flex;align-items:center;gap:8px;padding:8px 13px;border-radius:99px;background:var(--glass);border:1px solid var(--line);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);font-size:13px;font-weight:600}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--mint);box-shadow:0 0 0 0 rgba(61,255,181,.7);animation:pulse 2s infinite}
+@keyframes pulse{70%{box-shadow:0 0 0 9px rgba(61,255,181,0)}100%{box-shadow:0 0 0 0 rgba(61,255,181,0)}}
+/* жидкая сфера — «прилив» наполняется к выплате */
+.orbWrap{display:flex;align-items:center;gap:20px;margin-top:24px}
+.orb{position:relative;width:132px;height:132px;border-radius:50%;flex-shrink:0;overflow:hidden;
+ background:radial-gradient(circle at 30% 25%,rgba(255,255,255,.35),rgba(255,255,255,0) 40%),radial-gradient(circle at 50% 60%,#1B1640,#0B0A1E);
+ box-shadow:inset 0 0 0 1px rgba(255,255,255,.18),inset 0 -20px 40px rgba(0,0,0,.5),0 20px 60px rgba(34,211,255,.35);animation:float 5s ease-in-out infinite}
+@keyframes float{50%{transform:translateY(-6px)}}
+.water{position:absolute;left:0;right:0;bottom:0;height:72%;}
+.water svg{position:absolute;left:0;width:264px;height:100%}
+.w1{animation:wave 4s linear infinite;top:-10px;height:calc(100% + 10px)!important}
+.w2{animation:wave 6s linear infinite reverse;top:-18px;height:calc(100% + 18px)!important;opacity:.6}
+@keyframes wave{from{transform:translateX(0)}to{transform:translateX(-132px)}}
+.gloss{position:absolute;inset:0;border-radius:50%;background:radial-gradient(circle at 32% 22%,rgba(255,255,255,.55),rgba(255,255,255,0) 22%);pointer-events:none}
+.orbText .k{font-size:13px;color:var(--mute);font-weight:500}
+.timer{font-size:38px;font-weight:800;letter-spacing:-1px;font-variant-numeric:tabular-nums;margin-top:2px}
+.gain{color:var(--mint);font-weight:700;font-size:15px;margin-top:2px}
+/* баланс */
+.label{margin-top:26px;font-size:14px;color:var(--mute);font-weight:500}
+.balance{font-size:64px;font-weight:900;letter-spacing:-3px;line-height:1;margin-top:6px;font-variant-numeric:tabular-nums;
+ background:linear-gradient(100deg,#FFFFFF 30%,#BFEFFF 60%,#B9A8FF 80%,#FFFFFF 100%);background-size:250% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:shine 6s linear infinite}
+.balance small{font-size:34px;letter-spacing:-1px}
+@keyframes shine{to{background-position:-250% 0}}
+.delta{display:inline-flex;align-items:center;gap:6px;margin-top:12px;padding:7px 12px;border-radius:99px;background:rgba(61,255,181,.12);border:1px solid rgba(61,255,181,.25);color:var(--mint);font-weight:700;font-size:14px}
+/* стекло */
+.glass{background:var(--glass);border:1px solid var(--line);backdrop-filter:blur(24px) saturate(160%);-webkit-backdrop-filter:blur(24px) saturate(160%);border-radius:28px;box-shadow:inset 0 1px 0 rgba(255,255,255,.12)}
+.chart{margin-top:22px;padding:16px 16px 8px}
+.chartHead{display:flex;justify-content:space-between;align-items:center;font-size:14px;font-weight:600}
+.seg{display:flex;gap:4px;font-size:12px;font-weight:700;color:var(--mute)}
+.seg span{padding:5px 9px;border-radius:99px}.seg .on{background:rgba(255,255,255,.12);color:var(--ink)}
+.line{stroke-dasharray:600;stroke-dashoffset:600;animation:draw 2.2s .4s cubic-bezier(.6,0,.2,1) forwards}
+.area{opacity:0;animation:fade 1s 1.6s forwards}
+.tip{opacity:0;animation:fade .5s 2.4s forwards}
+@keyframes draw{to{stroke-dashoffset:0}}@keyframes fade{to{opacity:1}}
+.ring{transform-origin:316px 22px;animation:ring 2s 2.6s infinite}
+@keyframes ring{0%{transform:scale(1);opacity:.8}100%{transform:scale(3);opacity:0}}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px}
+.tile{padding:16px}.tile .k{font-size:13px;color:var(--mute);font-weight:500}.tile .v{font-size:26px;font-weight:800;margin-top:6px;letter-spacing:-.5px;color:var(--mint)}
+.deal{grid-column:span 2;padding:16px;display:flex;align-items:center;gap:14px}
+.coin{width:46px;height:46px;border-radius:15px;display:grid;place-items:center;font-weight:900;font-size:13px;background:linear-gradient(135deg,var(--violet),var(--cyan));box-shadow:0 8px 24px rgba(124,92,255,.45)}
+.deal .t{font-weight:700;font-size:16px}.deal .s{font-size:13px;color:var(--mute);margin-top:2px}
+.deal .apr{margin-left:auto;text-align:right;font-weight:900;font-size:22px;color:var(--mint)}
+.deal .apr span{display:block;font-size:11px;color:var(--mute);font-weight:500}
+.cta{display:block;margin-top:14px;text-align:center;padding:18px;border-radius:22px;font-weight:800;font-size:17px;color:#06060F;text-decoration:none;
+ background:linear-gradient(100deg,var(--mint),var(--cyan),var(--violet),var(--mint));background-size:300% 100%;animation:shine2 5s linear infinite;box-shadow:0 12px 40px rgba(34,211,255,.35)}
+@keyframes shine2{to{background-position:-300% 0}}
+/* появление */
+.in{opacity:0;transform:translateY(16px);animation:up .7s cubic-bezier(.2,.7,.2,1) forwards}
+@keyframes up{to{opacity:1;transform:none}}
+/* меню */
+.tabbar{position:fixed;left:50%;transform:translateX(-50%);bottom:22px;width:calc(100% - 40px);max-width:390px;display:flex;justify-content:space-between;padding:8px;border-radius:99px;z-index:5}
+.tabbar a{width:58px;height:50px;border-radius:99px;display:grid;place-items:center;color:var(--mute)}
+.tabbar a.on{background:rgba(255,255,255,.14);color:var(--ink)}
+@media (prefers-reduced-motion: reduce){*{animation:none!important}.line{stroke-dashoffset:0}.area,.tip,.in{opacity:1;transform:none}}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="aurora" aria-hidden="true"><div class="blob b1"></div><div class="blob b2"></div><div class="blob b3"></div></div>
+  <div class="content">
+    <div class="top in" style="animation-delay:.05s">
+      <div class="brand">
+        <svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#22D3FF"/><stop offset="1" stop-color="#7C5CFF"/></linearGradient></defs><circle cx="15" cy="15" r="14" fill="url(#lg)"/><path d="M3 17c4-3 6 2 12-1s8-2 12 1" stroke="#06060F" stroke-width="2.4" fill="none" stroke-linecap="round"/></svg>
+        Shio
+      </div>
+      <div class="pill"><span class="dot"></span>Работает · Виртуальный</div>
+    </div>
+
+    <div class="label in" style="animation-delay:.15s">Баланс на 4 биржах</div>
+    <div class="balance in" style="animation-delay:.2s">$<span id="bal">0</span><small id="cents">,00</small></div>
+    <div class="delta in" style="animation-delay:.35s">↑ +$12,40 · +2,48% за всё время</div>
+
+    <div class="orbWrap in" style="animation-delay:.45s">
+      <div class="orb" role="img" aria-label="Сфера наполняется к следующей выплате funding">
+        <div class="water">
+          <svg class="w2" viewBox="0 0 264 100" preserveAspectRatio="none"><path d="M0 12 Q33 0 66 12 T132 12 T198 12 T264 12 V100 H0Z" fill="#7C5CFF"/></svg>
+          <svg class="w1" viewBox="0 0 264 100" preserveAspectRatio="none"><defs><linearGradient id="wg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#22D3FF"/><stop offset="1" stop-color="#3DFFB5"/></linearGradient></defs><path d="M0 14 Q33 2 66 14 T132 14 T198 14 T264 14 V100 H0Z" fill="url(#wg)"/></svg>
+        </div>
+        <div class="gloss"></div>
+      </div>
+      <div class="orbText">
+        <div class="k">До следующей выплаты</div>
+        <div class="timer" id="timer">1:24:07</div>
+        <div class="gain">≈ +$0,21 придёт</div>
+      </div>
+    </div>
+
+    <div class="glass chart in" style="animation-delay:.55s">
+      <div class="chartHead"><span>Капитал</span><div class="seg"><span>1Н</span><span class="on">1М</span><span>Всё</span></div></div>
+      <svg viewBox="0 0 330 120" width="100%" height="96" preserveAspectRatio="none" role="img" aria-label="Рост капитала за месяц">
+        <defs>
+          <linearGradient id="ca" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#22D3FF" stop-opacity=".35"/><stop offset="1" stop-color="#22D3FF" stop-opacity="0"/></linearGradient>
+          <linearGradient id="cl" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#7C5CFF"/><stop offset=".6" stop-color="#22D3FF"/><stop offset="1" stop-color="#3DFFB5"/></linearGradient>
+        </defs>
+        <path class="area" d="M0 100 C 30 96, 50 99, 80 90 S 130 84, 160 78 S 210 70, 240 60 S 290 34, 316 22 L316 120 L0 120 Z" fill="url(#ca)"/>
+        <path class="line" d="M0 100 C 30 96, 50 99, 80 90 S 130 84, 160 78 S 210 70, 240 60 S 290 34, 316 22" fill="none" stroke="url(#cl)" stroke-width="3" stroke-linecap="round"/>
+        <g class="tip"><circle class="ring" cx="316" cy="22" r="6" fill="none" stroke="#3DFFB5" stroke-width="2"/><circle cx="316" cy="22" r="5" fill="#3DFFB5"/></g>
+      </svg>
+    </div>
+
+    <div class="grid2">
+      <div class="glass tile in" style="animation-delay:.7s"><div class="k">Сегодня</div><div class="v">+$0,62</div></div>
+      <div class="glass tile in" style="animation-delay:.78s"><div class="k">Неделя</div><div class="v">+$4,10</div></div>
+      <a href="#" class="glass deal in" style="animation-delay:.86s;text-decoration:none;color:inherit">
+        <div class="coin">ENA</div>
+        <div><div class="t">Лучшая связка</div><div class="s">Спот + шорт · Bybit</div></div>
+        <div class="apr">43,8%<span>открыть →</span></div>
+      </a>
+    </div>
+  </div>
+
+  <nav class="tabbar glass" aria-label="Разделы">
+    <a class="on" href="#" aria-label="Главная"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3.3 13.5c2.8-1.6 5 1.6 8.7 0s6-1.6 8.7 0"/></svg></a>
+    <a href="#" aria-label="Связки"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><path d="M3 10c3 0 3-3 6-3s3 3 6 3 3-3 6-3"/><path d="M3 17c3 0 3-3 6-3s3 3 6 3 3-3 6-3"/></svg></a>
+    <a href="#" aria-label="Позиции"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 2 8l10 5 10-5z"/><path d="m2 13 10 5 10-5"/></svg></a>
+    <a href="#" aria-label="История"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg></a>
+    <a href="#" aria-label="Настройки"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg></a>
+  </nav>
+</div>
+<script>
+// баланс «набегает»
+const target = 512.40, el = document.getElementById('bal'), ce = document.getElementById('cents');
+const t0 = performance.now() + 250;
+function tick(now){
+  const p = Math.min(1, Math.max(0, (now - t0) / 1600)), e = 1 - Math.pow(1 - p, 4), v = target * e;
+  el.textContent = Math.floor(v); ce.textContent = ',' + String(Math.round((v % 1) * 100)).padStart(2, '0');
+  if (p < 1) requestAnimationFrame(tick); else { el.textContent = '512'; ce.textContent = ',40'; }
+}
+requestAnimationFrame(tick);
+// таймер до выплаты
+let s = 1*3600 + 24*60 + 7; const tm = document.getElementById('timer');
+setInterval(() => { s = Math.max(0, s - 1); const h = Math.floor(s/3600), m = Math.floor(s%3600/60), x = s%60;
+  tm.textContent = h + ':' + String(m).padStart(2,'0') + ':' + String(x).padStart(2,'0'); }, 1000);
+</script>
+</body>
+</html>
