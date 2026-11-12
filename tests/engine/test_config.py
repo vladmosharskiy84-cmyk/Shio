@@ -160,6 +160,13 @@ def test_local_lists_and_scalars_replace(tmp_path):
     assert load_settings(path).launchpool.exchanges == ["okx"]
 
 
+def test_local_empty_section_header_changes_nothing(tmp_path):
+    path = write(tmp_path)
+    base = load_settings(path)
+    write_local(tmp_path, "telegram:\n  # chat_id: 1\nengine:\n")
+    assert load_settings(path) == base
+
+
 def test_local_missing_or_empty_is_ignored(tmp_path):
     path = write(tmp_path)
     base = load_settings(path)

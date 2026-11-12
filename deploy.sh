@@ -184,7 +184,7 @@ main() {
         logs) cmd_logs ;;
         doctor) cmd_doctor ;;
         restore) shift; cmd_restore "$@" ;;
-        -h|--help|help) sed -n '2,6p' "$ROOT/$(basename "$0")" | sed 's/^# \{0,1\}//' ;;
+        -h|--help|help) sed -n '2,6p' "$(readlink -f "$0")" | sed 's/^# \{0,1\}//' ;;
         *) die "неизвестная команда «$1». Команды: logs, doctor, restore <файл> (без команды — обновить)" ;;
     esac
 }

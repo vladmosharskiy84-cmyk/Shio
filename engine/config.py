@@ -230,6 +230,8 @@ def _deep_merge(base: dict, over: dict) -> dict:
     """Словари сливаются рекурсивно; числа, строки и списки из over заменяют значения base."""
     out = dict(base)
     for key, value in over.items():
+        if value is None and isinstance(out.get(key), dict):
+            continue  # пустой заголовок секции («engine:» без ключей) ничего не меняет
         if isinstance(value, dict) and isinstance(out.get(key), dict):
             out[key] = _deep_merge(out[key], value)
         else:
