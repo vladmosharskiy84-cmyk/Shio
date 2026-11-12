@@ -72,3 +72,12 @@ def test_cli_status_unchanged(tmp_path):
     db = Db(str(tmp_path / "x.db"))
     db.init()
     assert format_status(build_status(db, s, NOW)) + "\n" == out
+
+
+def test_split_message_never_emits_empty_parts():
+    assert split_message("") == []
+    assert split_message("\n\n") == []
+    parts = split_message("a" * 4096 + "\n")
+    assert parts == ["a" * 4096]
+    parts = split_message("b" * 4096 + "\n\n" + "c")
+    assert all(p.strip() for p in parts) and "".join(parts).replace("\n", "") == "b" * 4096 + "c"

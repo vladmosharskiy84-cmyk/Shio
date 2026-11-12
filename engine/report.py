@@ -109,7 +109,8 @@ def format_positions(db: Db, settings: Settings, now_ms: int) -> str:
 def split_message(text: str, limit: int = 4096) -> list[str]:
     """Делит текст на части ≤ limit: по переносам строк, слишком длинную строку — по символам.
 
-    "\n".join(части) == text.
+    Пустых частей (и частей только из пробелов) не бывает: Telegram такие не принимает,
+    поэтому пустой текст даёт []. Для обычного текста "\n".join(части) == text.
     """
     parts: list[str] = []
     cur: str | None = None
@@ -122,5 +123,6 @@ def split_message(text: str, limit: int = 4096) -> list[str]:
             if cur is not None:
                 parts.append(cur)
             cur = chunk
-    parts.append(cur if cur is not None else "")
-    return parts
+    if cur is not None:
+        parts.append(cur)
+    return [p for p in parts if p.strip()]
