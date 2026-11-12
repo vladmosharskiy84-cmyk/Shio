@@ -6,3 +6,4 @@ data/*.csv
 *.bundle
 data/*.db*
 data/*.log
+data/backups/

@@ -5,6 +5,7 @@ import logging
 from pathlib import Path
 from typing import Literal, Protocol
 
+from engine.backup import prune_local
 from engine.db import Db
 from engine.models import Proposal
 from engine.telegram.api import Button
@@ -45,6 +46,13 @@ def save_backup_file(folder: str | Path, filename: str, data: bytes) -> Path:
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / Path(filename).name
     path.write_bytes(data)
+    try:  # копии копятся каждый день: держим только последние
+        removed = prune_local(folder)
+    except OSError:
+        log.exception("Не удалось удалить старые копии в %s", folder)
+    else:
+        if removed:
+            log.info("Удалено старых копий в %s: %d", folder, removed)
     return path
 
 

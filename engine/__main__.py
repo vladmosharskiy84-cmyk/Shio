@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import logging.handlers
 import signal
@@ -109,7 +110,7 @@ def _cmd_restore(settings: Settings, args) -> int:
             pass  # повреждённая база: проверять нечего, её как раз и восстанавливают
         finally:
             db.conn.close()
-    if heartbeat is not None and _now_ms() - heartbeat <= _ALIVE_MS:
+    if not args.force and heartbeat is not None and _now_ms() - heartbeat <= _ALIVE_MS:
         print("Бот сейчас запущен. Остановите его (Ctrl+C в окне с python -m engine run), "
               "подождите 3 минуты и повторите: восстановление при работающем боте испортит базу.")
         return 1
@@ -130,6 +131,33 @@ def _cmd_restore(settings: Settings, args) -> int:
     print(f"База восстановлена из {args.file}.")
     if old:
         print(f"Прежняя база сохранена: {old}")
+    return 0
+
+
+# --- health (Docker HEALTHCHECK) ---
+def _cmd_health(settings: Settings, args) -> int:
+    """0 — движок жив (сигнал «жив» не старше 3 минут), 1 — нет; одна строка с причиной."""
+    path = settings.db_path
+    if not Path(path).exists():  # не создаём пустую базу
+        print(f"База не найдена: {path}")
+        return 1
+    try:
+        conn = sqlite3.connect(f"{Path(path).resolve().as_uri()}?mode=ro", uri=True, timeout=5)
+        try:
+            row = conn.execute("SELECT value FROM kv WHERE key='heartbeat'").fetchone()
+        finally:
+            conn.close()
+        heartbeat = None if row is None else int(json.loads(row[0]))
+    except (sqlite3.Error, ValueError, TypeError) as exc:
+        print(f"База не читается ({path}): {exc}")
+        return 1
+    if heartbeat is None:
+        print("Движок ещё не подал сигнал «жив»")
+        return 1
+    age_ms = _now_ms() - heartbeat
+    if age_ms > _ALIVE_MS:
+        print(f"Движок молчит {age_ms // 1000} с")
+        return 1
     return 0
 
 
@@ -364,8 +392,13 @@ def _parser() -> argparse.ArgumentParser:
                    ).set_defaults(fn=_cmd_telegram_id)
     sp = sub.add_parser("restore", help="восстановить базу из зашифрованной копии (бот должен быть остановлен)")
     sp.add_argument("file", help="файл копии shio-ГГГГ-ММ-ДД.db.enc")
+    sp.add_argument("--force", action="store_true",
+                    help="не проверять сигнал «жив» (только если бот точно остановлен, "
+                         "так делает ./deploy.sh restore)")
     sp.set_defaults(fn=_cmd_restore)
     sub.add_parser("resume", help="снять паузу").set_defaults(fn=_cmd_resume)
+    sub.add_parser("health", help="жив ли движок: 0 — да, 1 — нет (для Docker HEALTHCHECK)"
+                   ).set_defaults(fn=_cmd_health)
     sub.add_parser("doctor", help="самопроверка сервера: настройки, база, биржи, Telegram, сторож"
                    ).set_defaults(fn=_cmd_doctor)
     return p
@@ -380,6 +413,9 @@ def main(argv: list[str] | None = None) -> int:
             from engine.doctor import Check, format_checks
 
             print(format_checks([Check("Настройки", False, str(e))]))
+            return 1
+        if args.cmd == "health":  # Docker понимает только 0 и 1
+            print(f"Ошибка в настройках: {' '.join(str(e).split())}")
             return 1
         print(f"Ошибка в настройках: {e}")
         return 2

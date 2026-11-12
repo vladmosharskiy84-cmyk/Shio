@@ -1,0 +1,13 @@
+# Не попадает в образ: данные, секреты, история, служебные файлы
+data/
+.env
+.git
+.gitignore
+.superpowers
+.venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+docs
+tests
+*.bundle

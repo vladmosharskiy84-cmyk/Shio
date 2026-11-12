@@ -1,0 +1,16 @@
+# Shio на сервере: docker compose up -d (обновление — ./deploy.sh)
+services:
+  engine:
+    build: .
+    restart: always
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+      - ./config.yaml:/app/config.yaml:ro
+    stop_grace_period: 60s
+    mem_limit: 1g
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

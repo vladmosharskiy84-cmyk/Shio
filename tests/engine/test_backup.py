@@ -134,6 +134,25 @@ def test_restore_refuses_while_bot_alive(tmp_path, monkeypatch, capsys):
     assert "запущен" in capsys.readouterr().out
 
 
+def test_restore_force_skips_alive_check(tmp_path, monkeypatch, capsys):
+    # deploy.sh сам убеждается, что контейнер остановлен, и не ждёт 3 минуты
+    cfg = make_cfg(tmp_path)
+    monkeypatch.setenv("SHIO_BACKUP_KEY", b64())
+    db = Db(str(tmp_path / "shio.db"))
+    db.init()
+    db.set_kv("marker", 1)
+    blob = backup.encrypt(backup.snapshot_bytes(db), KEY)
+    db.set_kv("marker", 2)
+    db.heartbeat(int(time.time() * 1000))
+    db.conn.close()
+    f = tmp_path / "b.enc"
+    f.write_bytes(blob)
+    assert main(["--config", cfg, "restore", "--force", str(f)]) == 0
+    db = Db(str(tmp_path / "shio.db"))
+    assert db.get_kv("marker") == 1
+    db.conn.close()
+
+
 def test_restore_command_when_stopped(tmp_path, monkeypatch, capsys):
     cfg = make_cfg(tmp_path)
     monkeypatch.setenv("SHIO_BACKUP_KEY", b64())
@@ -181,3 +200,31 @@ def test_restore_without_existing_db_creates_no_empty_one_and_no_fake_old_path(
     assert main(["--config", cfg, "restore", str(f)]) == 0
     out = capsys.readouterr().out
     assert "before-restore" not in out and (tmp_path / "shio.db").exists()
+
+
+def test_prune_local_keeps_newest_14(tmp_path):
+    for day in range(1, 21):
+        (tmp_path / f"shio-2026-10-{day:02d}.db.enc").write_bytes(b"x")
+    (tmp_path / "notes.txt").write_text("keep")
+    assert backup.prune_local(tmp_path) == 6
+    left = sorted(p.name for p in tmp_path.glob("*.db.enc"))
+    assert left == [f"shio-2026-10-{d:02d}.db.enc" for d in range(7, 21)]
+    assert (tmp_path / "notes.txt").exists()
+    assert backup.prune_local(tmp_path) == 0
+    assert backup.prune_local(tmp_path, keep=2) == 12
+
+
+def test_prune_local_missing_dir(tmp_path):
+    assert backup.prune_local(tmp_path / "nope") == 0
+
+
+def test_log_notifier_prunes_after_save(tmp_path):
+    for day in range(1, 15):
+        (tmp_path / f"shio-2026-10-{day:02d}.db.enc").write_bytes(b"x")
+    db = Db(":memory:")
+    db.init()
+    n = LogNotifier(db, tmp_path)
+    assert run(n.send_document("shio-2026-10-15.db.enc", b"new", "Копия")) is True
+    names = sorted(p.name for p in tmp_path.glob("*.db.enc"))
+    assert len(names) == 14
+    assert names[0] == "shio-2026-10-02.db.enc" and names[-1] == "shio-2026-10-15.db.enc"

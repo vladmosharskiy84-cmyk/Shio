@@ -17,6 +17,7 @@ from engine.db import Db
 MAGIC = b"SHIO1"
 NONCE_LEN = 12
 KEY_ENV = "SHIO_BACKUP_KEY"
+LOCAL_KEEP = 14  # столько последних копий хранится в data/backups
 
 
 class BackupError(Exception):
@@ -48,6 +49,23 @@ def decrypt(blob: bytes, key: bytes) -> bytes:
         return AESGCM(key).decrypt(nonce, blob[len(MAGIC) + NONCE_LEN:], MAGIC)
     except InvalidTag:
         raise BackupError("Не удалось расшифровать копию: неверный ключ или файл повреждён.") from None
+
+
+def prune_local(folder: Path | str, keep: int = LOCAL_KEEP) -> int:
+    """Удалить старые копии *.db.enc сверх keep последних; вернуть число удалённых.
+
+    Порядок — по имени (shio-ГГГГ-ММ-ДД.db.enc сортируется по дате), а не по времени
+    файла: скопированная вручную старая копия не вытеснит свежие.
+    """
+    folder = Path(folder)
+    if not folder.is_dir():
+        return 0
+    files = sorted(p for p in folder.glob("*.db.enc") if p.is_file())
+    removed = 0
+    for old in files[:max(0, len(files) - keep)]:
+        old.unlink(missing_ok=True)
+        removed += 1
+    return removed
 
 
 def load_key() -> bytes | None:

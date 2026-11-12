@@ -156,6 +156,17 @@ def test_send_document_gives_up_without_raising(tmp_path):
     assert (n.backup_dir / "b.bin").read_bytes() == b"data"  # запасная копия на диске
 
 
+def test_send_document_failure_prunes_local_copies(tmp_path):
+    n, api, db, _ = make(tmp_path, api=FakeTelegramApi(fail_times=9))
+    n.backup_dir.mkdir(parents=True)
+    for day in range(1, 15):
+        (n.backup_dir / f"shio-2026-10-{day:02d}.db.enc").write_bytes(b"x")
+    assert run(n.send_document("shio-2026-10-15.db.enc", b"data", "копия")) is False
+    names = sorted(p.name for p in n.backup_dir.glob("*.db.enc"))
+    assert len(names) == 14 and names[0] == "shio-2026-10-02.db.enc"
+    assert names[-1] == "shio-2026-10-15.db.enc"
+
+
 def test_send_with_buttons_puts_them_on_last_part(tmp_path):
     n, api, _, _ = make(tmp_path)
     kb = [[Button("Закрыть", "close:ask:3")]]
