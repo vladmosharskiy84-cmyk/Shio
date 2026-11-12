@@ -79,3 +79,9 @@ def test_fail_suffix_keeps_query():
     http = FakeHttp(200)
     run(HealthPinger("https://hc-ping.com/uuid?rid=5", http).ping(fail=True))
     assert http.calls == ["https://hc-ping.com/uuid/fail?rid=5"]
+
+
+def test_ping_custom_suffix():
+    http = FakeHttp(200)
+    assert run(HealthPinger("https://hc-ping.com/uuid?rid=5", http).ping(suffix="/log")) is True
+    assert http.calls == ["https://hc-ping.com/uuid/log?rid=5"]

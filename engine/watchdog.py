@@ -40,9 +40,11 @@ class HealthPinger:
     def host(self) -> str:
         return urlsplit(self.url or "").hostname or "?"
 
-    def _fail_url(self) -> str:
+    def _suffix_url(self, suffix: str) -> str:
+        if not suffix:
+            return self.url
         parts = urlsplit(self.url)
-        return urlunsplit(parts._replace(path=parts.path.rstrip("/") + "/fail"))
+        return urlunsplit(parts._replace(path=parts.path.rstrip("/") + suffix))
 
     def _warn(self, reason: str) -> None:
         now = time.monotonic()
@@ -50,10 +52,11 @@ class HealthPinger:
             self._last_log = now
             log.warning("Сторож (%s): пинг не удался: %s", self.host, reason)
 
-    async def ping(self, fail: bool = False) -> bool:
+    async def ping(self, fail: bool = False, suffix: str = "") -> bool:
+        """Пинг; fail=True — сигнал сбоя (/fail); suffix — иной путь (например /log)."""
         if not self.url:
             return False
-        target = self._fail_url() if fail else self.url
+        target = self._suffix_url("/fail" if fail else suffix)
         try:
             status = await asyncio.wait_for(self._http_get(target, self.timeout_s),
                                             self.timeout_s)
