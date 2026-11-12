@@ -41,7 +41,7 @@ class Runner:
     loop_sleep_s = 1.0
 
     def __init__(self, settings, collector, broker, db, notifier, clock=time.time,
-                 announcement_sources=None, pinger=None):
+                 announcement_sources=None, pinger=None, stall=None):
         self.settings = settings
         self.collector = collector
         self.broker = broker
@@ -49,6 +49,7 @@ class Runner:
         self.notifier = notifier
         self.clock = clock
         self.pinger = pinger
+        self.stall = stall  # сторож зависания (engine.stall): кормим после каждого шага
         self.announcement_sources = list(announcement_sources or [])
         self.snapshot: MarketSnapshot | None = None
         self.snapshot_at: int | None = None  # now_ms (по self.clock) последнего удачного сбора
@@ -91,6 +92,8 @@ class Runner:
                 log.warning("Команд, прерванных прошлым запуском: %d (помечены ошибкой)", lost)
         while not self._stopping:
             await self.step()
+            if self.stall is not None:
+                self.stall.feed()
             await asyncio.sleep(self.loop_sleep_s)
         # чистая остановка: сигнал «жив» снимаем, чтобы restore и status сразу видели, что бот стоит
         try:

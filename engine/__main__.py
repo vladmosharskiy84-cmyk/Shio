@@ -248,6 +248,7 @@ async def _run(settings: Settings) -> None:
     from engine.broker import PaperBroker
     from engine.collector import Collector
     from engine.launchpool import AiohttpJson
+    from engine import stall as stall_mod
     from engine.runner import Runner
     from engine.watchdog import HealthPinger
     from engine.telegram import bot as tgbot
@@ -260,12 +261,14 @@ async def _run(settings: Settings) -> None:
         http = AiohttpJson()
         pinger = HealthPinger.from_env()
         _log_pinger(pinger)
+        stall = stall_mod.StallWatchdog()  # завис цикл на 5 минут — выход, Docker перезапустит
+        stall.start()
         try:
             broker = PaperBroker(collector, settings, db)
             notifier, token = tgbot.build_notifier(settings, db)
             sources = _build_announcement_sources(settings, http)
             runner = Runner(settings, collector, broker, db, notifier,
-                            announcement_sources=sources, pinger=pinger)
+                            announcement_sources=sources, pinger=pinger, stall=stall)
             _install_signal_handlers(runner)
             if token:
                 async def run_tg(stop_event: asyncio.Event) -> None:
@@ -289,9 +292,12 @@ async def _run(settings: Settings) -> None:
                     await aclose()
                 except Exception:  # noqa: BLE001
                     logging.getLogger("engine").exception("Telegram: ошибка при остановке")
-            await pinger.aclose()
-            await http.close()
-            await collector.close()
+            try:
+                await pinger.aclose()
+                await http.close()
+                await collector.close()
+            finally:
+                stall.stop()
 
 
 def _cmd_telegram_id(settings: Settings, args) -> int:
